@@ -11,39 +11,39 @@ max_delay_secs = 30
 # Use exponential backoff (true) or fixed interval (false)
 use_exponential_backoff = true
 
-# List of SSH channels to manage
-[[channels]]
-name = "example-session"
+# SSH Host definitions
+# Hosts define how to connect to remote SSH servers
+[[hosts]]
+name = "example-server"
 host = "example.com"
-port = 22
 username = "user"
-channel_type = "session"
 
-# Authentication method: password
-[channels.auth]
-type = "password"
-password = "your-password-here"
-
-# Channel parameters for session channels
-[channels.params]
-# Optional: command to execute
-# command = "tail -f /var/log/app.log"
-
-# Example with key authentication
-[[channels]]
-name = "example-port-forward"
-host = "example.com"
-port = 22
-username = "user"
-channel_type = "direct-tcpip"
-
-[channels.auth]
+[hosts.auth]
 type = "key"
 key_path = "~/.ssh/id_rsa"
 # Optional passphrase for the key
 # passphrase = "your-key-passphrase"
 
-# Channel parameters for direct-tcpip (port forwarding)
-[channels.params]
-destination_host = "localhost"
-destination_port = 3306
+# Another host example with password authentication
+[[hosts]]
+name = "example-server2"
+host = "example2.com"
+username = "user2"
+
+[hosts.auth]
+type = "password"
+password = "your-password-here"
+
+# Channel definitions
+# Channels reference hosts and define port forwarding
+[[channels]]
+name = "db-tunnel"
+hostname = "example-server"
+ports = "3306:3306"         # Format: "local:dest" (local port 3306 -> dest port 3306)
+# dest_host = "127.0.0.1"      # 可选，默认为 "127.0.0.1"
+
+[[channels]]
+name = "web-tunnel"
+hostname = "example-server2"
+ports = "8080:80"            # Format: "local:dest" (local port 8080 -> dest port 80)
+dest_host = "127.0.0.1"      # 可以显式指定，也可以省略（使用默认值）

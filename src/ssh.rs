@@ -169,11 +169,6 @@ impl SshManager {
                         AppError::SshAuthentication(format!("Key authentication failed: {}", e))
                     })?;
             }
-            AuthConfig::Agent => {
-                return Err(AppError::SshAuthentication(
-                    "SSH agent authentication not yet implemented".to_string(),
-                ));
-            }
         }
 
         info!(channel = %config.name, "Authentication successful, opening channel");
@@ -281,20 +276,26 @@ async fn open_direct_tcpip_channel(
     session: &mut client::Handle<ClientHandler>,
     config: &ChannelConfig,
 ) -> Result<()> {
-    let destination_host = config.params.destination_host.as_ref().ok_or_else(|| {
-        AppError::SshChannel("destination_host required for direct-tcpip".to_string())
-    })?;
+    // destination_host has a serde default value of "127.0.0.1" in ChannelParams
+    let destination_host = config
+        .params
+        .destination_host
+        .as_deref()
+        .expect("destination_host should always have a value due to serde default");
 
     let destination_port = config.params.destination_port.ok_or_else(|| {
         AppError::SshChannel("destination_port required for direct-tcpip".to_string())
     })?;
 
+    let source_host = "127.0.0.1";
+    let source_port = config.params.local_port.unwrap_or(0) as u32; // 0 = any available port
+
     let channel = session
         .channel_open_direct_tcpip(
             destination_host,
             destination_port as u32,
-            "127.0.0.1",
-            0, // Source port (0 = any)
+            source_host,
+            source_port,
         )
         .await
         .map_err(|e| AppError::SshChannel(format!("Failed to open direct-tcpip channel: {}", e)))?;

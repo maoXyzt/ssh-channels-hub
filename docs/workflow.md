@@ -35,7 +35,7 @@
    ↓
 3. 调用 ServiceManager::start()
    ├── 设置状态为 "Starting"
-   ├── 遍历所有通道配置
+   ├── 遍历所有 channels 配置
    │   ├── 创建 SshManager
    │   ├── 调用 SshManager::start()
    │   └── 记录启动结果
@@ -84,8 +84,8 @@
    ↓
 2. 显示状态信息
    ├── 服务状态
-   ├── 活动通道数
-   └── 总通道数
+   ├── 活动 channels 数
+   └── 总 channels 数
 ```
 
 #### Validate 命令
@@ -97,7 +97,7 @@
    ├── 检查 TOML 语法
    ├── 检查必需字段
    ├── 检查字段类型
-   └── 检查通道名称唯一性
+   └── 检查 channel 名称唯一性
    ↓
 3. 显示验证结果
 ```
@@ -124,16 +124,15 @@
    │   └── russh::client::connect()
    ├── 认证
    │   ├── 密码认证
-   │   ├── 密钥认证
-   │   └── Agent 认证（未来）
-   └── 打开通道
-       ├── Session 通道
-       └── Direct-TCPIP 通道
+   │   └── 密钥认证
+   └── 打开 channel
+       ├── Session channel
+       └── Direct-TCPIP channel
 ```
 
-### 2.2 通道管理流程
+### 2.2 channel 管理流程
 
-#### Session 通道
+#### Session channel
 
 ```
 1. channel_open_session()
@@ -142,24 +141,24 @@
    ├── 有命令: exec(command)
    └── 无命令: request_pty() + shell()
    ↓
-3. 启动通道数据处理任务
-   ├── 监听通道消息
+3. 启动 channel 数据处理任务
+   ├── 监听 channel 消息
    ├── 处理数据
-   └── 检测通道关闭
+   └── 检测 channel 关闭
 ```
 
-#### Direct-TCPIP 通道
+#### Direct-TCPIP channel
 
 ```
 1. channel_open_direct_tcpip()
-   ├── 目标主机
+   ├── 目标地址
    ├── 目标端口
-   ├── 源主机（本地）
+   ├── 源地址（本地）
    └── 源端口（0 = 任意）
    ↓
-2. 启动通道数据处理任务
+2. 启动 channel 数据处理任务
    ├── 转发数据
-   └── 检测通道关闭
+   └── 检测 channel 关闭
 ```
 
 ## 3. 重连流程
@@ -167,7 +166,7 @@
 ### 3.1 连接断开检测
 
 ```
-连接/通道错误发生
+连接/channel 错误发生
    ↓
 错误被捕获
    ↓
@@ -255,37 +254,37 @@
    ↓
 3. 连接自动关闭
    ↓
-4. 其他通道继续运行
+4. 其他 channels 继续运行
    ↓
 5. 服务状态可能变为 "Error"
 ```
 
 ## 5. 并发执行流程
 
-### 5.1 多通道并发
+### 5.1 多 channels 并发
 
 ```
 主任务
-  ├── 通道 1 任务 ──┐
-  ├── 通道 2 任务 ──┤
-  ├── 通道 3 任务 ──┼──> 独立运行，互不阻塞
-  └── 通道 N 任务 ──┘
+  ├── channel 1 任务 ──┐
+  ├── channel 2 任务 ──┤
+  ├── channel 3 任务 ──┼──> 独立运行，互不阻塞
+  └── channel N 任务 ──┘
 ```
 
-### 5.2 通道内部并发
+### 5.2 channel 内部并发
 
 ```
 SshManager 任务
   ├── 连接管理任务
-  ├── 通道数据处理任务 1
-  ├── 通道数据处理任务 2
+  ├── channel 数据处理任务 1
+  ├── channel 数据处理任务 2
   └── 关闭信号监听任务
 ```
 
 ### 5.3 同步点
 
-- **启动**: 所有通道并行启动，不等待其他通道
-- **停止**: 等待所有通道完成关闭
+- **启动**: 所有 channels 并行启动，不等待其他 channels
+- **停止**: 等待所有 channels 完成关闭
 - **状态查询**: 需要锁定状态进行读取
 
 ## 6. 错误处理流程
@@ -298,13 +297,13 @@ SshManager 任务
 
 连接错误
   ├── 临时性错误 → 重试
-  └── 永久性错误 → 记录错误，跳过该通道
+  └── 永久性错误 → 记录错误，跳过该 channel
 
 认证错误
-  └── 记录错误，跳过该通道（不重试）
+  └── 记录错误，跳过该 channel（不重试）
 
-通道错误
-  └── 重试（重新打开通道）
+channel 错误
+  └── 重试（重新打开 channel）
 ```
 
 ### 6.2 错误传播
@@ -328,8 +327,8 @@ SshManager 任务
 ### 7.1 日志级别使用
 
 - **trace**: 详细的函数调用和状态变化
-- **debug**: 通道消息、连接细节
-- **info**: 重要事件（连接建立、通道打开）
+- **debug**: channel 消息、连接细节
+- **info**: 重要事件（连接建立、channel 打开）
 - **warn**: 非致命问题（连接关闭、重连）
 - **error**: 错误条件（连接失败、认证失败）
 
@@ -337,8 +336,8 @@ SshManager 任务
 
 ```
 info!(
-    channel = %config.name,    // 通道名称
-    host = %config.host,       // 主机地址
+    channel = %config.name,    // channel 名称
+    host = %config.host,       // host 地址
     port = config.port,        // 端口号
     "Establishing SSH connection"
 )

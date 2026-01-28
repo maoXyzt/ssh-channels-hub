@@ -1,5 +1,6 @@
 use crate::config::AppConfig;
 use crate::error::{AppError, Result};
+use crate::port_check::check_ports;
 use crate::ssh::SshManager;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -48,19 +49,86 @@ impl ServiceManager {
 
         info!("Starting SSH Channels Hub service");
 
+        // Check port availability before starting channels
+        let ports_to_check: Vec<u16> = self
+            .config
+            .channels
+            .iter()
+            .filter_map(|conn| conn.ports.local_port)
+            .collect();
+
+        if !ports_to_check.is_empty() {
+            info!(
+                "Checking port availability for {} port(s)",
+                ports_to_check.len()
+            );
+            match check_ports(&ports_to_check).await {
+                Ok(occupied) => {
+                    if !occupied.is_empty() {
+                        let error_msg = format!(
+                            "Port(s) already in use: {}. Please stop the application using these ports or change the configuration.",
+                            occupied.iter().map(|p: &u16| p.to_string()).collect::<Vec<_>>().join(", ")
+                        );
+                        error!(ports = ?occupied, "Port check failed");
+                        let mut state = self.state.lock().await;
+                        *state = ServiceState::Error(error_msg.clone());
+                        return Err(AppError::Service(error_msg));
+                    }
+                    info!("All ports are available");
+                }
+                Err(e) => {
+                    warn!(error = ?e, "Failed to check port availability, continuing anyway");
+                    // Continue even if port check fails (might be a permission issue)
+                }
+            }
+        }
+
         let mut managers = Vec::new();
         let mut errors = Vec::new();
 
-        for channel_config in &self.config.channels {
+        let channels = self
+            .config
+            .build_channels()
+            .map_err(|e| AppError::Service(format!("Failed to build channels: {}", e)))?;
+
+        info!("Found {} channel(s) to start", channels.len());
+
+        for channel_config in channels {
             let mut manager =
                 SshManager::new(channel_config.clone(), self.config.reconnection.clone());
 
             match manager.start().await {
                 Ok(_) => {
+                    // Output channel information
+                    let local_port_info = channel_config
+                        .params
+                        .local_port
+                        .expect("local_port must be set")
+                        .to_string();
+                    let dest_info = format!(
+                        "{}:{}",
+                        channel_config
+                            .params
+                            .destination_host
+                            .as_deref()
+                            .unwrap_or("127.0.0.1"),
+                        channel_config.params.destination_port.unwrap_or(0)
+                    );
+
+                    println!(
+                        "✓ Channel '{}' started: local:{} -> {} -> {}@{}",
+                        channel_config.name,
+                        local_port_info,
+                        dest_info,
+                        channel_config.username,
+                        channel_config.host
+                    );
+
                     info!(channel = %channel_config.name, "Started SSH manager");
                     managers.push(manager);
                 }
                 Err(e) => {
+                    println!("✗ Channel '{}' failed to start: {}", channel_config.name, e);
                     error!(
                         channel = %channel_config.name,
                         error = ?e,
@@ -77,6 +145,10 @@ impl ServiceManager {
 
         if errors.is_empty() {
             *state = ServiceState::Running;
+            println!(
+                "\n✓ Service started successfully with {} active channel(s)",
+                managers_guard.len()
+            );
             info!("Service started successfully");
             Ok(())
         } else if managers_guard.is_empty() {
@@ -87,6 +159,11 @@ impl ServiceManager {
             )))
         } else {
             *state = ServiceState::Running;
+            println!(
+                "\n⚠ Service started with {} active channel(s), {} failed",
+                managers_guard.len(),
+                errors.len()
+            );
             warn!(
                 errors = %errors.join(", "),
                 "Service started with some channel failures"
