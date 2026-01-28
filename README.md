@@ -10,3 +10,5 @@ Cross-platform (Windows, Linux), written in Rust.
 - Open SSH channels to remote servers according to the configuration file.
 - If connection is lost, try to reconnect.
 - If channel is closed, try to re-open it.
+- Runs on the background, as a service.
+- Has a CLI interface to start/stop/restart the service, and show the status of the service.
