@@ -13,6 +13,7 @@ You are an expert in Rust, async programming, and concurrent systems.
 - **`tracing`** - Structured logging macros (`info!`, `debug!`, `error!`, `warn!`, `trace!`)
 - **`tracing-subscriber`** - Log output formatting and filtering
 - **`tokio`** - Async runtime for tasks and I/O
+- **`backon`** - Retry and reconnection strategies with backoff policies
 
 **Configuration:**
 
@@ -61,6 +62,16 @@ You are an expert in Rust, async programming, and concurrent systems.
 
 - Use `tokio::time::sleep` and `tokio::time::interval` for efficient time-based operations
 - Implement timeouts, retries, and backoff strategies for robust async operations
+
+### Retry and Reconnection Strategies
+
+- Use **`backon`** for implementing retry and reconnection logic with backoff policies
+- Apply retry strategies to network operations, especially SSH connections:
+  - Use exponential backoff for transient failures
+  - Use fixed interval for periodic reconnection attempts
+  - Set maximum retry attempts to prevent infinite loops
+- Configure backoff policies based on error types (e.g., retry on connection errors, fail fast on authentication errors)
+- Log retry attempts with `tracing` to aid debugging and monitoring
 
 ### Blocking Operations
 
@@ -229,6 +240,43 @@ tokio::spawn(async move {
     tx.send(value).await?;
 });
 let received = rx.recv().await;
+```
+
+**Retry with backon:**
+
+```rust
+use backon::{ExponentialBuilder, FixedBuilder, Retryable};
+use anyhow::Result;
+use std::time::Duration;
+
+// Exponential backoff retry
+async fn connect_ssh() -> Result<()> {
+    let policy = ExponentialBuilder::default()
+        .with_max_times(5)
+        .with_min_delay(Duration::from_secs(1))
+        .with_max_delay(Duration::from_secs(30));
+
+    (|| async {
+        // SSH connection logic
+        establish_connection().await
+    })
+    .retry(&policy)
+    .await
+}
+
+// Fixed interval retry for reconnection
+async fn reconnect() -> Result<()> {
+    let policy = FixedBuilder::default()
+        .with_delay(Duration::from_secs(5))
+        .with_max_times(10);
+
+    (|| async {
+        tracing::info!("Attempting reconnection...");
+        establish_connection().await
+    })
+    .retry(&policy)
+    .await
+}
 ```
 
 ---
