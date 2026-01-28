@@ -1,6 +1,6 @@
+use crate::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use crate::error::{AppError, Result};
 
 /// SSH channel configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

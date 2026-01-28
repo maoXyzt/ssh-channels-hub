@@ -3,7 +3,7 @@ use crate::error::{AppError, Result};
 use backon::{ExponentialBuilder, Retryable};
 use russh::*;
 use russh_keys::key::KeyPair;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -116,12 +116,10 @@ impl SshManager {
         };
 
         // Retry connection with backoff
-        (|| async {
-            Self::establish_connection(config).await
-        })
-        .retry(&builder)
-        .await
-        .map_err(|e| AppError::SshConnection(format!("Failed to establish connection: {}", e)))
+        (|| async { Self::establish_connection(config).await })
+            .retry(&builder)
+            .await
+            .map_err(|e| AppError::SshConnection(format!("Failed to establish connection: {}", e)))
     }
 
     /// Establish SSH connection and open channel
@@ -138,9 +136,10 @@ impl SshManager {
         let config_arc = Arc::new(config_builder);
         let handler = ClientHandler;
 
-        let mut session = russh::client::connect(config_arc, (config.host.as_str(), config.port), handler)
-            .await
-            .map_err(|e| AppError::SshConnection(format!("Failed to connect: {}", e)))?;
+        let mut session =
+            russh::client::connect(config_arc, (config.host.as_str(), config.port), handler)
+                .await
+                .map_err(|e| AppError::SshConnection(format!("Failed to connect: {}", e)))?;
 
         info!(channel = %config.name, "SSH connection established, authenticating");
 
@@ -151,10 +150,16 @@ impl SshManager {
                     .authenticate_password(&config.username, password)
                     .await
                     .map_err(|e| {
-                        AppError::SshAuthentication(format!("Password authentication failed: {}", e))
+                        AppError::SshAuthentication(format!(
+                            "Password authentication failed: {}",
+                            e
+                        ))
                     })?;
             }
-            AuthConfig::Key { key_path, passphrase } => {
+            AuthConfig::Key {
+                key_path,
+                passphrase,
+            } => {
                 let key = load_secret_key(key_path, passphrase.as_deref()).await?;
 
                 session
@@ -201,16 +206,12 @@ impl SshManager {
 }
 
 /// Load SSH private key
-async fn load_secret_key(
-    key_path: &Path,
-    passphrase: Option<&str>,
-) -> Result<KeyPair> {
+async fn load_secret_key(key_path: &Path, passphrase: Option<&str>) -> Result<KeyPair> {
     let key_path = key_path.to_path_buf();
     let passphrase = passphrase.map(|s| s.to_string());
 
     tokio::task::spawn_blocking(move || {
-        let key_data = std::fs::read_to_string(&key_path)
-            .map_err(|e| AppError::Io(e))?;
+        let key_data = std::fs::read_to_string(&key_path).map_err(AppError::Io)?;
 
         let key_result = if let Some(passphrase) = passphrase {
             russh_keys::decode_secret_key(&key_data, Some(&passphrase))
@@ -280,20 +281,13 @@ async fn open_direct_tcpip_channel(
     session: &mut client::Handle<ClientHandler>,
     config: &ChannelConfig,
 ) -> Result<()> {
-    let destination_host = config
-        .params
-        .destination_host
-        .as_ref()
-        .ok_or_else(|| {
-            AppError::SshChannel("destination_host required for direct-tcpip".to_string())
-        })?;
+    let destination_host = config.params.destination_host.as_ref().ok_or_else(|| {
+        AppError::SshChannel("destination_host required for direct-tcpip".to_string())
+    })?;
 
-    let destination_port = config
-        .params
-        .destination_port
-        .ok_or_else(|| {
-            AppError::SshChannel("destination_port required for direct-tcpip".to_string())
-        })?;
+    let destination_port = config.params.destination_port.ok_or_else(|| {
+        AppError::SshChannel("destination_port required for direct-tcpip".to_string())
+    })?;
 
     let channel = session
         .channel_open_direct_tcpip(
@@ -303,9 +297,7 @@ async fn open_direct_tcpip_channel(
             0, // Source port (0 = any)
         )
         .await
-        .map_err(|e| {
-            AppError::SshChannel(format!("Failed to open direct-tcpip channel: {}", e))
-        })?;
+        .map_err(|e| AppError::SshChannel(format!("Failed to open direct-tcpip channel: {}", e)))?;
 
     info!(
         channel = %config.name,

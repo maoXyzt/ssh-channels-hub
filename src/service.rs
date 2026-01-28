@@ -52,10 +52,8 @@ impl ServiceManager {
         let mut errors = Vec::new();
 
         for channel_config in &self.config.channels {
-            let mut manager = SshManager::new(
-                channel_config.clone(),
-                self.config.reconnection.clone(),
-            );
+            let mut manager =
+                SshManager::new(channel_config.clone(), self.config.reconnection.clone());
 
             match manager.start().await {
                 Ok(_) => {
