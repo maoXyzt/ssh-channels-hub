@@ -178,6 +178,18 @@ enum SshError {
 - Consider using `Arc` for shared ownership when needed
 - Use `tokio::sync::Mutex` instead of `std::sync::Mutex` in async contexts
 
+## Developer's Notes
+
+- Use the "conventional commit" style for commit messages, like this:
+
+```plaintext
+<type>[optional scope]: <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+
 ## Quick Reference
 
 ### Common Patterns
