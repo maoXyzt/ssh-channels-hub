@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -33,8 +33,8 @@ async fn main() -> AnyhowResult<()> {
 
     // Handle commands
     match cli.command {
-        Commands::Start { foreground } => {
-            handle_start(config_path, foreground).await?;
+        Commands::Start { daemon } => {
+            handle_start(config_path, daemon).await?;
         }
         Commands::Stop => {
             handle_stop(config_path).await?;
@@ -78,7 +78,7 @@ fn init_logging(debug: bool) -> AnyhowResult<()> {
 }
 
 /// Handle start command
-async fn handle_start(config_path: std::path::PathBuf, foreground: bool) -> AnyhowResult<()> {
+async fn handle_start(config_path: std::path::PathBuf, daemon: bool) -> AnyhowResult<()> {
     info!("Loading configuration from: {}", config_path.display());
 
     let config = AppConfig::from_file(&config_path).context("Failed to load configuration")?;
@@ -104,7 +104,7 @@ async fn handle_start(config_path: std::path::PathBuf, foreground: bool) -> Anyh
         port
     );
 
-    if foreground {
+    if !daemon {
         info!("Service running in foreground. Press Ctrl+C to stop.");
 
         tokio::select! {
@@ -114,7 +114,7 @@ async fn handle_start(config_path: std::path::PathBuf, foreground: bool) -> Anyh
 
         info!("Shutdown signal received, stopping service...");
     } else {
-        info!("Daemon mode not yet implemented, running in foreground");
+        warn!("Daemon mode not yet implemented, running in foreground");
         info!("Service running. Press Ctrl+C to stop.");
 
         tokio::select! {
@@ -356,9 +356,7 @@ async fn handle_status(config_path: PathBuf) -> AnyhowResult<()> {
             println!("Service Status:");
             println!("  State: {:?}", ServiceState::Stopped);
             println!("  Active Channels: 0/{}", total);
-            println!(
-                "  Note: Service is not running. Start with: ssh-channels-hub start --foreground"
-            );
+            println!("  Note: Service is not running. Start with: ssh-channels-hub start");
         }
         Err(e) => {
             println!("✗ Failed to load configuration: {}", e);
