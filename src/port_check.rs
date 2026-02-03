@@ -84,17 +84,17 @@ pub async fn test_port_connection(host: &str, port: u16) -> Result<bool> {
     }
 }
 
-/// Test multiple port connections and return results
-pub async fn test_port_connections(connections: &[(String, u16)]) -> Vec<(String, u16, bool)> {
-    let mut results = Vec::new();
+// /// Test multiple port connections and return results
+// pub async fn test_port_connections(connections: &[(String, u16)]) -> Vec<(String, u16, bool)> {
+//     let mut results = Vec::new();
 
-    for (host, port) in connections {
-        let connected = test_port_connection(host, *port).await.unwrap_or(false);
-        results.push((host.clone(), *port, connected));
-    }
+//     for (host, port) in connections {
+//         let connected = test_port_connection(host, *port).await.unwrap_or(false);
+//         results.push((host.clone(), *port, connected));
+//     }
 
-    results
-}
+//     results
+// }
 
 #[cfg(test)]
 mod tests {
