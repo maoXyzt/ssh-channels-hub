@@ -22,7 +22,7 @@ pub struct Cli {
 pub enum Commands {
     /// Start the service
     Start {
-        /// Run as daemon in background (not implemented yet; currently runs in foreground)
+        /// Run as daemon in background (spawns detached child process)
         #[arg(short = 'D', long)]
         daemon: bool,
     },
