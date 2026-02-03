@@ -1,0 +1,51 @@
+# SSH Channels Hub Configuration Example
+
+# --- Channel definitions ---
+# Channels reference hosts and define port forwarding
+[[channels]]
+name = "db-tunnel"
+hostname = "example-server"
+ports = "3306:3306"         # Format: "local:dest" (local port 3306 -> dest port 3306)
+# dest_host = "127.0.0.1"      # 可选，默认为 "127.0.0.1"
+
+[[channels]]
+name = "web-tunnel"
+hostname = "example-server2"
+ports = "8080:80"            # Format: "local:dest" (local port 8080 -> dest port 80)
+dest_host = "127.0.0.1"      # 可以显式指定，也可以省略（使用默认值）
+# listen_host = "127.0.0.1"   # 本地监听地址，默认 127.0.0.1；填 "0.0.0.0" 可接受任意网卡连接
+
+# --- Reconnection settings ---
+# (applies to all channels)
+[reconnection]
+# Maximum retry attempts (0 = unlimited)
+max_retries = 0
+# Initial delay in seconds before retry
+initial_delay_secs = 1
+# Maximum delay in seconds between retries
+max_delay_secs = 30
+# Use exponential backoff (true) or fixed interval (false)
+use_exponential_backoff = true
+
+# --- SSH Host definitions ---
+# Hosts define how to connect to remote SSH servers
+[[hosts]]
+name = "example-server"
+host = "example.com"
+username = "user"
+
+[hosts.auth]
+type = "key"
+key_path = "~/.ssh/id_rsa"
+# Optional passphrase for the key
+# passphrase = "your-key-passphrase"
+
+# Another host example with password authentication
+[[hosts]]
+name = "example-server2"
+host = "example2.com"
+username = "user2"
+
+[hosts.auth]
+type = "password"
+password = "your-password-here"

@@ -37,4 +37,19 @@ pub enum Commands {
         /// Configuration file to validate
         config: Option<PathBuf>,
     },
+    /// Generate configuration from SSH config file
+    Generate {
+        /// SSH config file path (default: ~/.ssh/config)
+        #[arg(short, long)]
+        ssh_config: Option<PathBuf>,
+        /// Output TOML config file path
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Test if channels are actually working by connecting to local ports
+    Test {
+        /// Configuration file path
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+    },
 }

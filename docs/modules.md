@@ -11,7 +11,7 @@ src/
 ├── config.rs    # 配置加载和解析
 ├── error.rs     # 错误类型定义
 ├── service.rs   # 服务管理
-└── ssh.rs       # SSH 连接和通道管理
+└── ssh.rs       # SSH 连接和 channel 管理
 ```
 
 ## 2. 模块详细说明
@@ -73,14 +73,32 @@ pub enum Commands {
 
 ```rust
 pub struct AppConfig {
-    pub channels: Vec<ChannelConfig>,
+    pub hosts: Vec<HostConfig>,
+    pub channels: Vec<ConnectionConfig>,
     pub reconnection: ReconnectionConfig,
 }
 
+pub struct HostConfig {
+    pub name: String,
+    pub host: String,
+    pub port: u16,                // SSH 端口，默认值为 22
+    pub username: String,
+    pub auth: AuthConfig,
+}
+
+pub struct ConnectionConfig {
+    pub name: String,
+    pub hostname: String,
+    pub local_port: Option<u16>,
+    pub dest_host: String,
+    pub dest_port: u16,
+}
+
+// Runtime channel configuration (built from hosts + channels)
 pub struct ChannelConfig {
     pub name: String,
     pub host: String,
-    pub port: u16,
+    pub port: u16,                // SSH 端口，默认值为 22
     pub username: String,
     pub auth: AuthConfig,
     pub channel_type: String,
@@ -90,7 +108,6 @@ pub struct ChannelConfig {
 pub enum AuthConfig {
     Password { password: String },
     Key { key_path: PathBuf, passphrase: Option<String> },
-    Agent,
 }
 ```
 
@@ -98,6 +115,8 @@ pub enum AuthConfig {
 
 - `AppConfig::from_file()`: 从文件加载配置
 - `AppConfig::default_path()`: 获取默认配置路径
+- `AppConfig::build_channels()`: 将 hosts 和 channels 组合成运行时 ChannelConfig
+- `AppConfig::from_ssh_config_entries()`: 从 SSH config 生成配置
 - 使用 `serde` 进行 TOML 反序列化
 - 提供默认值支持
 
@@ -134,7 +153,7 @@ pub enum AppError {
 
 ### 2.5 service.rs
 
-**职责**: 管理所有 SSH 通道的服务生命周期
+**职责**: 管理所有 SSH channels 的服务生命周期
 
 **核心数据结构**:
 
@@ -156,8 +175,8 @@ pub enum ServiceState {
 
 **主要功能**:
 
-- `start()`: 启动所有通道
-- `stop()`: 停止所有通道
+- `start()`: 启动所有 channels
+- `stop()`: 停止所有 channels
 - `restart()`: 重启服务
 - `status()`: 获取服务状态
 
@@ -165,7 +184,7 @@ pub enum ServiceState {
 
 - 使用 `Arc<Mutex<>>` 管理共享状态
 - 状态机模式管理服务状态
-- 优雅处理部分通道启动失败的情况
+- 优雅处理部分 channels 启动失败的情况
 - 提供详细的状态信息
 
 **并发安全**:
@@ -176,7 +195,7 @@ pub enum ServiceState {
 
 ### 2.6 ssh.rs
 
-**职责**: 管理单个 SSH 连接和通道
+**职责**: 管理单个 SSH 连接和 channel
 
 **核心数据结构**:
 
@@ -197,9 +216,9 @@ struct ClientHandler;
    - `connect_ssh_session()`: 连接到 SSH 服务器
    - `load_secret_key()`: 加载私钥文件
 
-2. **通道管理**:
-   - `open_session_channel()`: 打开会话通道
-   - `open_direct_tcpip_channel()`: 打开端口转发通道
+2. **channel 管理**:
+   - `open_session_channel()`: 打开会话 channel
+   - `open_direct_tcpip_channel()`: 打开端口转发 channel
 
 3. **重连逻辑**:
    - `connect_and_manage_channel()`: 带重试的连接管理
@@ -214,7 +233,7 @@ struct ClientHandler;
 - 每个管理器运行在独立任务中
 - 使用 `tokio::select!` 处理关闭信号
 - 自动重连机制
-- 支持多种通道类型
+- 支持多种 channel 类型
 
 **重连策略**:
 
@@ -255,9 +274,9 @@ main.rs
 
 ## 5. 扩展点
 
-### 5.1 添加新的通道类型
+### 5.1 添加新的 channel 类型
 
-在 `ssh.rs` 中添加新的通道打开函数，在 `establish_connection()` 中添加分支。
+在 `ssh.rs` 中添加新的 channel 打开函数，在 `establish_connection()` 中添加分支。
 
 ### 5.2 添加新的认证方式
 

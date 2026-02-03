@@ -1,0 +1,15 @@
+Host myserver
+    HostName example.com
+    Port 22
+    User myuser
+    IdentityFile ~/.ssh/id_rsa
+
+Host myserver2
+    HostName example2.com
+    Port 2222
+    User user2
+
+Host myserver3
+    HostName example3.com
+    User admin
+    IdentityFile ~/.ssh/id_ed25519

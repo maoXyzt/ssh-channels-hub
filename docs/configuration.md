@@ -22,22 +22,24 @@ initial_delay_secs = 1        # 初始延迟（秒）
 max_delay_secs = 30          # 最大延迟（秒）
 use_exponential_backoff = true # 使用指数退避
 
-# 通道列表
-[[channels]]
-name = "channel-name"
+# hosts 定义
+[[hosts]]
+name = "example-server"
 host = "example.com"
-port = 22
+port = 22                    # SSH 端口（可选，默认为 22）
 username = "user"
-channel_type = "session"     # 或 "direct-tcpip"
 
-# 认证配置
-[channels.auth]
-type = "password"            # 或 "key" 或 "agent"
-password = "your-password"
+[hosts.auth]
+type = "key"                 # 或 "password"
+key_path = "~/.ssh/id_rsa"
 
-# 通道参数
-[channels.params]
-command = "tail -f /var/log/app.log"  # 可选，仅用于 session 类型
+# channels 定义（端口转发）
+[[channels]]
+name = "db-tunnel"
+hostname = "example-server"  # 引用上面定义的 host name
+local_port = 3306            # 本地端口（可选）
+dest_port = 3306             # 远程目标端口
+# dest_host = "127.0.0.1"    # 可选，默认为 "127.0.0.1"
 ```
 
 ## 2. 配置项详解
@@ -56,28 +58,29 @@ command = "tail -f /var/log/app.log"  # 可选，仅用于 session 类型
 - **指数退避**: 延迟时间按指数增长，适用于临时性网络故障
 - **固定间隔**: 延迟时间固定，适用于周期性检查
 
-### 2.2 通道配置 (`channels`)
+### 2.2 hosts 配置
 
-每个通道是一个数组元素，使用 `[[channels]]` 定义。
+每个 host 是一个数组元素，使用 `[[hosts]]` 定义。
 
-#### 必需字段
+#### 字段
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `name` | string | 通道的唯一标识名称 |
+| `name` | string | host 的唯一标识名称（供 channels 引用） |
 | `host` | string | SSH 服务器地址 |
-| `port` | u16 | SSH 端口，默认 22 |
 | `username` | string | SSH 用户名 |
-| `channel_type` | string | 通道类型：`session` 或 `direct-tcpip` |
+| `port` | u16 | 22 | SSH 服务器端口号 |
 
 #### 认证配置 (`auth`)
 
-支持三种认证方式：
+**重要**: 每个 host 都可以独立配置自己的认证方式，包括使用不同的密钥文件。
+
+支持两种认证方式：
 
 **1. 密码认证**
 
 ```toml
-[channels.auth]
+[hosts.auth]
 type = "password"
 password = "your-password"
 ```
@@ -85,49 +88,43 @@ password = "your-password"
 **2. 私钥认证**
 
 ```toml
-[channels.auth]
+[hosts.auth]
 type = "key"
 key_path = "~/.ssh/id_rsa"        # 支持 ~ 扩展
 passphrase = "optional-passphrase" # 可选，如果密钥有密码保护
 ```
 
-**3. SSH Agent 认证**
+### 2.3 channels 配置
 
-```toml
-[channels.auth]
-type = "agent"
-```
+每个 channel 是一个数组元素，使用 `[[channels]]` 定义。channels 用于定义端口转发（SSH 隧道）。
 
-*注意: SSH Agent 认证目前尚未完全实现*
+#### 必需字段
 
-#### 通道参数 (`params`)
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string | channel 的唯一标识名称 |
+| `hostname` | string | 引用的 host 名称（必须匹配 `hosts.name`） |
+| `dest_port` | u16 | 远程服务器上的目标端口 |
 
-根据通道类型，参数有所不同：
+#### 可选字段
 
-**Session 通道参数**:
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `dest_host` | string | 远程服务器上的目标地址（默认：`127.0.0.1`） |
+| `local_port` | u16 | 本地监听的端口（如果不指定，将使用随机端口） |
+| `listen_host` | string | 本地监听地址（默认：`127.0.0.1`）。填 `"0.0.0.0"` 时接受任意网卡连接 |
 
-```toml
-[channels.params]
-command = "tail -f /var/log/app.log"  # 可选，要执行的命令
-```
+**说明**:
 
-- 如果指定 `command`，将执行该命令
-- 如果不指定，将打开一个交互式 shell
-
-**Direct-TCPIP 通道参数**:
-
-```toml
-[channels.params]
-destination_host = "localhost"    # 必需，目标主机
-destination_port = 3306          # 必需，目标端口
-```
-
-- 用于端口转发（SSH 隧道）
-- 将本地端口转发到远程主机
+- channels 用于端口转发（SSH 隧道）
+- 将本地端口转发到远程服务器的指定端口
+- 所有 channel 类型都是 `direct-tcpip`（端口转发）
+- `dest_host` 默认为 `"127.0.0.1"`，如果不需要指定其他地址，可以省略
+- `listen_host` 默认为 `"127.0.0.1"`（仅本机可连）；设为 `"0.0.0.0"` 时，其他机器可通过本机 IP 访问该端口
 
 ## 3. 配置示例
 
-### 3.1 基本会话通道
+### 3.1 基本端口转发 channel
 
 ```toml
 [reconnection]
@@ -136,57 +133,92 @@ initial_delay_secs = 1
 max_delay_secs = 30
 use_exponential_backoff = true
 
-[[channels]]
-name = "web-server"
-host = "web.example.com"
-port = 22
-username = "admin"
-channel_type = "session"
+# hosts 定义
+[[hosts]]
+name = "db-server"
+host = "db.example.com"
+port = 22                    # SSH 端口（可选，默认为 22）
+username = "user"
 
-[channels.auth]
+[hosts.auth]
 type = "key"
 key_path = "~/.ssh/id_rsa"
+
+# channels 定义
+[[channels]]
+name = "db-tunnel"
+hostname = "db-server"
+local_port = 3306
+dest_host = "127.0.0.1"
+dest_port = 3306
 ```
 
-### 3.2 执行命令的会话通道
+### 3.2 使用密码认证的端口转发
 
 ```toml
-[[channels]]
-name = "log-monitor"
-host = "log.example.com"
-port = 22
-username = "monitor"
-channel_type = "session"
+[[hosts]]
+name = "web-server"
+host = "web.example.com"
+port = 22                    # SSH 端口（可选，默认为 22）
+username = "admin"
 
-[channels.auth]
+[hosts.auth]
 type = "password"
 password = "secure-password"
 
-[channels.params]
-command = "tail -f /var/log/application.log"
+[[channels]]
+name = "web-tunnel"
+hostname = "web-server"
+local_port = 8080
+dest_host = "127.0.0.1"
+dest_port = 80
 ```
 
-### 3.3 端口转发通道
+### 3.3 使用密钥密码的端口转发
 
 ```toml
-[[channels]]
-name = "db-tunnel"
-host = "db.example.com"
-port = 22
+[[hosts]]
+name = "secure-server"
+host = "secure.example.com"
+port = 22                    # SSH 端口（可选，默认为 22）
 username = "user"
-channel_type = "direct-tcpip"
 
-[channels.auth]
+[hosts.auth]
 type = "key"
 key_path = "~/.ssh/id_rsa"
 passphrase = "key-passphrase"
 
-[channels.params]
-destination_host = "localhost"
-destination_port = 3306
+[[channels]]
+name = "secure-tunnel"
+hostname = "secure-server"
+local_port = 3306
+dest_host = "127.0.0.1"
+dest_port = 3306
 ```
 
-### 3.4 多通道配置
+### 3.3.1 使用非标准 SSH 端口
+
+如果 SSH 服务器使用非标准端口（不是 22），需要显式指定 `port` 字段：
+
+```toml
+[[hosts]]
+name = "custom-port-server"
+host = "example.com"
+port = 2222                   # 非标准 SSH 端口
+username = "user"
+
+[hosts.auth]
+type = "key"
+key_path = "~/.ssh/id_rsa"
+
+[[channels]]
+name = "custom-tunnel"
+hostname = "custom-port-server"
+local_port = 3306
+dest_port = 3306
+```
+
+### 3.4 多 channels 配置
 
 ```toml
 [reconnection]
@@ -195,49 +227,138 @@ initial_delay_secs = 2
 max_delay_secs = 60
 use_exponential_backoff = true
 
-# 通道 1: Web 服务器
-[[channels]]
-name = "web-1"
-host = "web1.example.com"
-port = 22
+# hosts 定义
+[[hosts]]
+name = "web-server"
+host = "web.example.com"
+port = 22                    # SSH 端口（可选，默认为 22）
 username = "admin"
-channel_type = "session"
 
-[channels.auth]
+[hosts.auth]
 type = "key"
-key_path = "~/.ssh/web1_key"
+key_path = "~/.ssh/web_key"
 
-# 通道 2: 数据库隧道
-[[channels]]
-name = "db-tunnel"
+[[hosts]]
+name = "db-server"
 host = "db.example.com"
-port = 22
+port = 22                    # SSH 端口（可选，默认为 22）
 username = "dbuser"
-channel_type = "direct-tcpip"
 
-[channels.auth]
+[hosts.auth]
 type = "password"
 password = "db-password"
 
-[channels.params]
-destination_host = "localhost"
-destination_port = 3306
+[[hosts]]
+name = "redis-server"
+host = "redis.example.com"
+port = 22                    # SSH 端口（可选，默认为 22）
+username = "redis-user"
 
-# 通道 3: 日志监控
-[[channels]]
-name = "log-monitor"
-host = "log.example.com"
-port = 2222
-username = "monitor"
-channel_type = "session"
-
-[channels.auth]
+[hosts.auth]
 type = "key"
-key_path = "~/.ssh/log_key"
+key_path = "~/.ssh/redis_key"
 
-[channels.params]
-command = "journalctl -f"
+# channels 定义
+[[channels]]
+name = "web-tunnel"
+hostname = "web-server"
+local_port = 8080
+dest_host = "127.0.0.1"
+dest_port = 80
+
+[[channels]]
+name = "db-tunnel"
+hostname = "db-server"
+local_port = 3306
+dest_host = "127.0.0.1"
+dest_port = 3306
+
+[[channels]]
+name = "redis-tunnel"
+hostname = "redis-server"
+local_port = 6379
+dest_host = "127.0.0.1"
+dest_port = 6379
 ```
+
+### 3.5 多 hosts 使用不同认证方式
+
+**重要**: 每个 host 都可以独立配置自己的认证方式，包括使用不同的密钥文件。
+
+#### 示例：不同 hosts 使用不同认证方式
+
+```toml
+# host 1: 使用密码认证
+[[hosts]]
+name = "web-server"
+host = "web.example.com"
+port = 22                    # SSH 端口（可选，默认为 22）
+username = "admin"
+
+[hosts.auth]
+type = "password"
+password = "web-password"
+
+# host 2: 使用默认密钥
+[[hosts]]
+name = "db-server"
+host = "db.example.com"
+port = 22                    # SSH 端口（可选，默认为 22）
+username = "dbuser"
+
+[hosts.auth]
+type = "key"
+key_path = "~/.ssh/id_rsa"
+
+# host 3: 使用不同的密钥文件
+[[hosts]]
+name = "backup-server"
+host = "backup.example.com"
+port = 22                    # SSH 端口（可选，默认为 22）
+username = "backup"
+
+[hosts.auth]
+type = "key"
+key_path = "~/.ssh/backup_key"
+passphrase = "backup-key-passphrase"
+
+# channels 定义
+[[channels]]
+name = "web-tunnel"
+hostname = "web-server"
+local_port = 8080
+dest_host = "127.0.0.1"
+dest_port = 80
+
+[[channels]]
+name = "db-tunnel"
+hostname = "db-server"
+local_port = 3306
+dest_host = "127.0.0.1"
+dest_port = 3306
+
+[[channels]]
+name = "backup-tunnel"
+hostname = "backup-server"
+local_port = 2222
+dest_host = "127.0.0.1"
+dest_port = 22
+```
+
+#### 使用场景
+
+- **不同服务器使用不同密钥**: 为不同的服务器配置不同的 SSH 密钥，提高安全性
+- **混合认证方式**: 某些服务器使用密码，某些使用密钥
+- **不同用户账户**: 不同 hosts 可能使用不同的用户名和认证方式
+- **密钥管理**: 为不同环境（开发/生产）使用不同的密钥文件
+
+#### 注意事项
+
+1. **密钥文件路径**: 每个 host 的 `key_path` 可以指向不同的密钥文件
+2. **密钥密码**: 如果密钥有密码保护，需要在对应 host 的配置中指定 `passphrase`
+3. **认证方式独立**: 每个 host 的认证配置完全独立，互不影响
+4. **配置灵活性**: 可以根据实际需求为每个 host 选择最合适的认证方式
+5. **channel 引用**: channels 通过 `hostname` 字段引用 hosts，确保 `hostname` 与 `hosts.name` 匹配
 
 ## 4. 配置验证
 
@@ -252,7 +373,7 @@ ssh-channels-hub validate --config /path/to/config.toml
 - 文件格式是否正确
 - 必需字段是否存在
 - 字段类型是否正确
-- 通道名称是否唯一
+- channel 名称是否唯一
 
 ## 5. 配置最佳实践
 
@@ -261,7 +382,7 @@ ssh-channels-hub validate --config /path/to/config.toml
 1. **使用密钥认证而非密码**
 
    ```toml
-   [channels.auth]
+   [hosts.auth]
    type = "key"
    key_path = "~/.ssh/id_rsa"
    ```
@@ -288,7 +409,7 @@ ssh-channels-hub validate --config /path/to/config.toml
 
 ### 5.3 可维护性
 
-1. **使用有意义的通道名称**
+1. **使用有意义的 channel 名称**
 
    ```toml
    name = "production-web-server"  # 好
@@ -299,13 +420,26 @@ ssh-channels-hub validate --config /path/to/config.toml
 
    ```toml
    # Production database tunnel
+   [[hosts]]
+   name = "prod-db"
+   host = "db.prod.example.com"
+   port = 22                    # SSH 端口（可选，默认为 22）
+   username = "admin"
+
+   [hosts.auth]
+   type = "key"
+   key_path = "~/.ssh/prod_key"
+
    [[channels]]
    name = "prod-db-tunnel"
-   # ...
+   hostname = "prod-db"
+   local_port = 3306
+   dest_host = "127.0.0.1"
+   dest_port = 3306
    ```
 
 3. **分组管理**
-   - 将相关通道放在一起
+   - 将相关 channels 放在一起
    - 使用注释分隔不同环境
 
 ## 6. 配置迁移
@@ -333,15 +467,15 @@ ssh-channels-hub validate --config /path/to/config.toml
 - **原因**: TOML 语法错误
 - **解决**: 检查括号、引号是否匹配
 
-**错误**: `Missing required field: host`
+**错误**: `Missing required field: hostname`
 
-- **原因**: 缺少必需字段
-- **解决**: 检查配置文件中是否所有必需字段都已填写
+- **原因**: channel 配置中缺少 `hostname` 字段
+- **解决**: 检查 `[[channels]]` 配置中是否指定了 `hostname`，并确保对应的 `[[hosts]]` 存在
 
-**错误**: `Invalid channel type: xyz`
+**错误**: `Channel 'xxx' references unknown host 'yyy'`
 
-- **原因**: 不支持的通道类型
-- **解决**: 使用 `session` 或 `direct-tcpip`
+- **原因**: channel 引用的 host 名称不存在
+- **解决**: 确保 `channels.hostname` 与 `hosts.name` 匹配
 
 ### 7.2 调试配置
 
@@ -356,3 +490,53 @@ ssh-channels-hub start --debug --config /path/to/config.toml
 - 配置加载过程
 - 每个字段的解析结果
 - 验证错误详情
+
+## 8. 扩展阅读
+
+### 8.1 端口转发说明
+
+当前版本仅支持端口转发功能。所有 channels 都是端口转发类型，用于建立安全的 TCP/IP 连接隧道。
+
+#### 多 channels 配置
+
+在实际应用中，你可以配置多个端口转发 channels：
+
+```toml
+[[hosts]]
+name = "db-server"
+host = "db.example.com"
+port = 22                    # SSH 端口（可选，默认为 22）
+username = "admin"
+
+[hosts.auth]
+type = "key"
+key_path = "~/.ssh/id_rsa"
+
+[[hosts]]
+name = "web-server"
+host = "web.example.com"
+port = 22                    # SSH 端口（可选，默认为 22）
+username = "admin"
+
+[hosts.auth]
+type = "key"
+key_path = "~/.ssh/id_rsa"
+
+# 数据库端口转发
+[[channels]]
+name = "db-tunnel"
+hostname = "db-server"
+local_port = 3306
+dest_host = "127.0.0.1"
+dest_port = 3306
+
+# Web 服务端口转发
+[[channels]]
+name = "web-tunnel"
+hostname = "web-server"
+local_port = 8080
+dest_host = "127.0.0.1"
+dest_port = 80
+```
+
+这样可以在一个配置中同时管理多个端口转发 channels。
