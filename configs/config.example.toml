@@ -47,3 +47,4 @@ name = "web-tunnel"
 hostname = "example-server2"
 ports = "8080:80"            # Format: "local:dest" (local port 8080 -> dest port 80)
 dest_host = "127.0.0.1"      # 可以显式指定，也可以省略（使用默认值）
+# listen_host = "127.0.0.1"   # 本地监听地址，默认 127.0.0.1；填 "0.0.0.0" 可接受任意网卡连接

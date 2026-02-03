@@ -107,6 +107,14 @@ pub struct ConnectionConfig {
     /// Destination host for direct-tcpip (defaults to 127.0.0.1)
     #[serde(default = "default_destination_host")]
     pub dest_host: String,
+    /// Local listen address for direct-tcpip (defaults to 127.0.0.1).
+    /// Use "0.0.0.0" to accept connections from any interface.
+    #[serde(default = "default_listen_host")]
+    pub listen_host: String,
+}
+
+fn default_listen_host() -> String {
+    "127.0.0.1".to_string()
 }
 
 fn default_destination_host() -> String {
@@ -166,8 +174,15 @@ pub struct ChannelParams {
     pub destination_port: Option<u16>,
     /// For direct-tcpip: local/source port
     pub local_port: Option<u16>,
+    /// For direct-tcpip: local listen address (defaults to 127.0.0.1). Use "0.0.0.0" for all interfaces.
+    #[serde(default = "default_listen_host_option")]
+    pub listen_host: Option<String>,
     /// For session: command to execute
     pub command: Option<String>,
+}
+
+fn default_listen_host_option() -> Option<String> {
+    Some(default_listen_host())
 }
 
 fn default_destination_host_option() -> Option<String> {
@@ -180,6 +195,7 @@ impl Default for ChannelParams {
             destination_host: Some(default_destination_host()),
             destination_port: None,
             local_port: None,
+            listen_host: Some(default_listen_host()),
             command: None,
         }
     }
@@ -333,6 +349,7 @@ impl AppConfig {
                 destination_host: Some(conn.dest_host.clone()),
                 destination_port: Some(conn.ports.dest_port),
                 local_port: conn.ports.local_port,
+                listen_host: Some(conn.listen_host.clone()),
                 ..Default::default()
             };
 
