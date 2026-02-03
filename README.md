@@ -1,17 +1,16 @@
 # SSH Channels Hub
 
-An CLI application to create and manage SSH channels.
+A CLI application to create and manage SSH channels (port forwarding over SSH).
 
 Cross-platform (Windows, Linux), written in Rust.
 
 ## Features
 
-- Read local configuration file to get the list of channels to open.
-- Open SSH channels to remote servers according to the configuration file.
-- If connection is lost, try to reconnect.
-- If channel is closed, try to re-open it.
-- Runs on the background, as a service.
-- Has a CLI interface to start/stop/restart the service, and show the status of the service.
+- **Port forwarding**: Listen on local ports and forward traffic to remote hosts via SSH tunnels (direct-tcpip).
+- **Hosts + channels**: Define SSH hosts once, then reference them in channel configs (hostname, ports, dest_host, listen_host).
+- **Automatic reconnection**: Reconnect with configurable backoff when the connection is lost.
+- **Background service**: Run in foreground or background; CLI to start/stop/restart and show status.
+- **Config validation**: Validate config file; generate config from `~/.ssh/config`.
 
 ## Usage
 
@@ -23,46 +22,46 @@ Build from source:
 cargo build --release
 ```
 
-The binary will be located at `target/release/ssh-channels-hub`.
+The binary will be at `target/release/ssh-channels-hub` (or `ssh-channels-hub.exe` on Windows).
 
 ### Configuration
 
-1. Create a configuration file. The default location is:
+1. **Config file location** (default):
    - **Linux/macOS**: `~/.config/ssh-channels-hub/config.toml`
    - **Windows**: `%APPDATA%\ssh-channels-hub\config.toml`
 
-2. Copy the example configuration:
+2. **Copy the example config**:
 
    ```bash
    mkdir -p ~/.config/ssh-channels-hub
-   cp configs/config.example.toml ~/.config/ssh-channels-hub/config.toml
+   cp configs.example.toml ~/.config/ssh-channels-hub/config.toml
    ```
 
-3. Edit the configuration file with your SSH channel settings. See [Configuration Documentation](docs/configuration.md) for details.
+3. Edit the file with your hosts and channels. See [Configuration](docs/configuration.md) for details.
 
 ### Basic Commands
 
 #### Start the service
 
-Start the service in foreground mode (for testing):
+Foreground (for testing):
 
 ```bash
 ssh-channels-hub start --foreground
 ```
 
-Start the service in background (daemon mode - future feature):
+Background:
 
 ```bash
 ssh-channels-hub start
 ```
 
-Use a custom configuration file:
+Custom config:
 
 ```bash
 ssh-channels-hub start --config /path/to/config.toml
 ```
 
-Enable debug logging:
+Debug logging:
 
 ```bash
 ssh-channels-hub start --debug
@@ -86,113 +85,87 @@ ssh-channels-hub restart
 ssh-channels-hub status
 ```
 
-#### Validate configuration
+#### Test channels
 
-Validate the default configuration file:
+Test that configured channels are reachable (connect to local ports):
+
+```bash
+ssh-channels-hub test
+ssh-channels-hub test --config /path/to/config.toml
+```
+
+#### Validate configuration
 
 ```bash
 ssh-channels-hub validate
-```
-
-Validate a specific configuration file:
-
-```bash
 ssh-channels-hub validate --config /path/to/config.toml
 ```
 
 #### Generate configuration from SSH config
 
-Generate a `configs.toml` file from your `~/.ssh/config`:
+Generate a config from `~/.ssh/config`:
 
 ```bash
 ssh-channels-hub generate
+ssh-channels-hub generate --ssh-config /path/to/ssh_config --output /path/to/config.toml
 ```
 
-Use a custom SSH config file:
+The generated file contains `[[hosts]]` entries. Add `[[channels]]` sections (hostname, ports, optional dest_host / listen_host) for port forwarding.
 
-```bash
-ssh-channels-hub generate --ssh-config /path/to/ssh_config
-```
+### Configuration format (summary)
 
-Specify output file:
+- **Hosts** (`[[hosts]]`): `name`, `host`, `port`, `username`, `auth` (key or password).
+- **Channels** (`[[channels]]`): `name`, `hostname` (must match a host), `ports` in form `"local:dest"` (e.g. `"80:3923"` = listen on local port 80, forward to remote port 3923).
+- **Optional per channel**: `dest_host` (default `127.0.0.1`), `listen_host` (default `127.0.0.1`; use `0.0.0.0` to accept connections from any interface).
 
-```bash
-ssh-channels-hub generate --output /path/to/configs.toml
-```
+### Configuration examples
 
-**Note**: The generated configuration will:
-
-- Extract `name`, `host`, `port`, and `username` from SSH config entries
-- Set `channel_type` to `direct-tcpip` by default
-- Use key authentication if `IdentityFile` is specified in SSH config
-- Use password authentication with placeholder `CHANGE_ME` if no `IdentityFile` is found (you'll need to update the password manually)
-
-### Configuration Examples
-
-#### Basic Session Channel
+#### Port forwarding (local 8080 → remote 80)
 
 ```toml
-[[channels]]
+[[hosts]]
 name = "web-server"
 host = "example.com"
 port = 22
 username = "user"
-channel_type = "session"
 
-[channels.auth]
+[hosts.auth]
 type = "key"
 key_path = "~/.ssh/id_rsa"
-```
 
-#### Execute Command
-
-```toml
 [[channels]]
-name = "log-monitor"
-host = "server.example.com"
-port = 22
-username = "monitor"
-channel_type = "session"
-
-[channels.auth]
-type = "password"
-password = "your-password"
-
-[channels.params]
-command = "tail -f /var/log/application.log"
+name = "web-tunnel"
+hostname = "web-server"
+ports = "8080:80"
+dest_host = "127.0.0.1"
+# listen_host = "127.0.0.1"   # default; use "0.0.0.0" to allow other machines to connect
 ```
 
-#### Port Forwarding (Direct-TCPIP)
+#### Port forwarding (listen on all interfaces)
 
 ```toml
 [[channels]]
 name = "db-tunnel"
-host = "db.example.com"
-port = 22
-username = "user"
-channel_type = "direct-tcpip"
-
-[channels.auth]
-type = "key"
-key_path = "~/.ssh/id_rsa"
-
-[channels.params]
-destination_host = "localhost"
-destination_port = 3306
+hostname = "db-server"
+ports = "3306:3306"
+dest_host = "127.0.0.1"
+listen_host = "0.0.0.0"
 ```
 
-### Common Use Cases
+### Common use cases
 
-1. **Monitor remote logs**: Configure a session channel with a command to tail logs
-2. **Port forwarding**: Set up SSH tunnels for secure database access
-3. **Multiple connections**: Manage multiple SSH connections from a single configuration
-4. **Automatic reconnection**: Keep connections alive with automatic reconnection on failure
+1. **Secure DB access**: Forward local 3306 to remote MySQL (e.g. `ports = "3306:3306"`).
+2. **Remote web service**: Forward local 8080 to remote 80 (e.g. `ports = "8080:80"`).
+3. **Multiple tunnels**: Define several channels; all start together and reconnect independently.
+4. **Expose to LAN**: Set `listen_host = "0.0.0.0"` so other machines can use the tunnel (consider firewall and security).
 
 ### Troubleshooting
 
-- **Connection fails**: Check your SSH credentials and network connectivity
-- **Configuration errors**: Use `validate` command to check your configuration file
-- **Debug issues**: Use `--debug` flag to see detailed logs
-- **Permission errors**: Ensure your SSH key file has correct permissions (600)
+- **Connection fails**: Check SSH credentials and network; try `ssh user@host` manually.
+- **Port in use**: Change `ports` (e.g. use 18080 instead of 80) or stop the app using the port.
+- **Bind 80 on Windows**: Often requires running as Administrator.
+- **Config errors**: Run `ssh-channels-hub validate`.
+- **Debug**: Use `ssh-channels-hub start --debug`.
+- **Key permissions**: Ensure SSH key file has correct permissions (e.g. 600).
 
-For more information, see the [Documentation](docs/README.md).
+More details: [Documentation](docs/README.md), [How to use](docs/HowToUse.md), [Configuration](docs/configuration.md).
