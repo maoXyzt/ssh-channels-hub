@@ -6,11 +6,13 @@ SSH Channels Hub 使用 TOML 格式的配置文件。
 
 ### 1.1 配置文件位置
 
-默认配置文件路径：
+默认配置文件按**顺序**查找，使用**第一个存在的文件**：
 
+- **当前目录**: `./configs.toml`
 - **Linux/macOS**: `~/.config/ssh-channels-hub/config.toml`
 - **Windows**: `%APPDATA%\ssh-channels-hub\config.toml`
-- **自定义**: 使用 `--config` 参数指定
+
+**自定义路径**: 使用 `--config` 参数指定时，仅使用该文件，不再查找默认路径。
 
 ### 1.2 配置文件结构
 
@@ -37,8 +39,7 @@ key_path = "~/.ssh/id_rsa"
 [[channels]]
 name = "db-tunnel"
 hostname = "example-server"  # 引用上面定义的 host name
-local_port = 3306            # 本地端口（可选）
-dest_port = 3306             # 远程目标端口
+ports = "3306:3306"          # 格式 "本地端口:远程端口"
 # dest_host = "127.0.0.1"    # 可选，默认为 "127.0.0.1"
 ```
 
@@ -104,20 +105,19 @@ passphrase = "optional-passphrase" # 可选，如果密钥有密码保护
 |------|------|------|
 | `name` | string | channel 的唯一标识名称 |
 | `hostname` | string | 引用的 host 名称（必须匹配 `hosts.name`） |
-| `dest_port` | u16 | 远程服务器上的目标端口 |
+| `ports` | string | 端口转发，格式为 `"本地端口:远程端口"`，例如 `"3306:3306"`、`"80:3923"` |
 
 #### 可选字段
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `dest_host` | string | 远程服务器上的目标地址（默认：`127.0.0.1`） |
-| `local_port` | u16 | 本地监听的端口（如果不指定，将使用随机端口） |
 | `listen_host` | string | 本地监听地址（默认：`127.0.0.1`）。填 `"0.0.0.0"` 时接受任意网卡连接 |
 
 **说明**:
 
 - channels 用于端口转发（SSH 隧道）
-- 将本地端口转发到远程服务器的指定端口
+- `ports` 格式为 `"local:dest"`，本地端口与远程端口均为必填
 - 所有 channel 类型都是 `direct-tcpip`（端口转发）
 - `dest_host` 默认为 `"127.0.0.1"`，如果不需要指定其他地址，可以省略
 - `listen_host` 默认为 `"127.0.0.1"`（仅本机可连）；设为 `"0.0.0.0"` 时，其他机器可通过本机 IP 访问该端口
@@ -148,9 +148,8 @@ key_path = "~/.ssh/id_rsa"
 [[channels]]
 name = "db-tunnel"
 hostname = "db-server"
-local_port = 3306
+ports = "3306:3306"
 dest_host = "127.0.0.1"
-dest_port = 3306
 ```
 
 ### 3.2 使用密码认证的端口转发
@@ -169,9 +168,8 @@ password = "secure-password"
 [[channels]]
 name = "web-tunnel"
 hostname = "web-server"
-local_port = 8080
+ports = "8080:80"
 dest_host = "127.0.0.1"
-dest_port = 80
 ```
 
 ### 3.3 使用密钥密码的端口转发
@@ -191,9 +189,8 @@ passphrase = "key-passphrase"
 [[channels]]
 name = "secure-tunnel"
 hostname = "secure-server"
-local_port = 3306
+ports = "3306:3306"
 dest_host = "127.0.0.1"
-dest_port = 3306
 ```
 
 ### 3.3.1 使用非标准 SSH 端口
@@ -214,8 +211,7 @@ key_path = "~/.ssh/id_rsa"
 [[channels]]
 name = "custom-tunnel"
 hostname = "custom-port-server"
-local_port = 3306
-dest_port = 3306
+ports = "3306:3306"
 ```
 
 ### 3.4 多 channels 配置
@@ -262,23 +258,20 @@ key_path = "~/.ssh/redis_key"
 [[channels]]
 name = "web-tunnel"
 hostname = "web-server"
-local_port = 8080
+ports = "8080:80"
 dest_host = "127.0.0.1"
-dest_port = 80
 
 [[channels]]
 name = "db-tunnel"
 hostname = "db-server"
-local_port = 3306
+ports = "3306:3306"
 dest_host = "127.0.0.1"
-dest_port = 3306
 
 [[channels]]
 name = "redis-tunnel"
 hostname = "redis-server"
-local_port = 6379
+ports = "6379:6379"
 dest_host = "127.0.0.1"
-dest_port = 6379
 ```
 
 ### 3.5 多 hosts 使用不同认证方式
@@ -326,23 +319,20 @@ passphrase = "backup-key-passphrase"
 [[channels]]
 name = "web-tunnel"
 hostname = "web-server"
-local_port = 8080
+ports = "8080:80"
 dest_host = "127.0.0.1"
-dest_port = 80
 
 [[channels]]
 name = "db-tunnel"
 hostname = "db-server"
-local_port = 3306
+ports = "3306:3306"
 dest_host = "127.0.0.1"
-dest_port = 3306
 
 [[channels]]
 name = "backup-tunnel"
 hostname = "backup-server"
-local_port = 2222
+ports = "2222:22"
 dest_host = "127.0.0.1"
-dest_port = 22
 ```
 
 #### 使用场景
@@ -433,9 +423,8 @@ ssh-channels-hub validate --config /path/to/config.toml
    [[channels]]
    name = "prod-db-tunnel"
    hostname = "prod-db"
-   local_port = 3306
+   ports = "3306:3306"
    dest_host = "127.0.0.1"
-   dest_port = 3306
    ```
 
 3. **分组管理**
@@ -526,17 +515,15 @@ key_path = "~/.ssh/id_rsa"
 [[channels]]
 name = "db-tunnel"
 hostname = "db-server"
-local_port = 3306
+ports = "3306:3306"
 dest_host = "127.0.0.1"
-dest_port = 3306
 
 # Web 服务端口转发
 [[channels]]
 name = "web-tunnel"
 hostname = "web-server"
-local_port = 8080
+ports = "8080:80"
 dest_host = "127.0.0.1"
-dest_port = 80
 ```
 
 这样可以在一个配置中同时管理多个端口转发 channels。

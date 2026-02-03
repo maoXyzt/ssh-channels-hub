@@ -89,9 +89,9 @@ pub struct HostConfig {
 pub struct ConnectionConfig {
     pub name: String,
     pub hostname: String,
-    pub local_port: Option<u16>,
+    pub ports: PortForward,       // 配置格式 "local:dest"，解析后含 local_port、dest_port
     pub dest_host: String,
-    pub dest_port: u16,
+    pub listen_host: String,
 }
 
 // Runtime channel configuration (built from hosts + channels)

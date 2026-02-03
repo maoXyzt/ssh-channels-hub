@@ -63,8 +63,7 @@ password = "your-password"
 [[channels]]
 name = "web-service-tunnel"       # channel 名称（唯一标识）
 hostname = "remote-server"         # 引用上面定义的 host name
-local_port = 18080                # 本地端口（可选，你访问的端口）
-dest_port = 8080                  # 远程服务器上的目标端口
+ports = "18080:8080"               # 格式 "本地端口:远程端口"
 # dest_host = "127.0.0.1"         # 可选，默认为 "127.0.0.1"
 ```
 
@@ -93,8 +92,7 @@ key_path = "~/.ssh/id_rsa"
 [[channels]]
 name = "web-service-tunnel"
 hostname = "remote-server"
-local_port = 18080
-dest_port = 8080
+ports = "18080:8080"
 # dest_host = "127.0.0.1"  # 可选，默认为 "127.0.0.1"
 ```
 
@@ -102,7 +100,8 @@ dest_port = 8080
 
 1. **保存配置文件**
 
-   将上述配置保存到默认配置文件位置：
+   将上述配置保存到默认配置文件位置（按顺序查找，使用匹配的第一个）：
+   - **当前目录**: `./configs.toml`
    - **Linux/macOS**: `~/.config/ssh-channels-hub/config.toml`
    - **Windows**: `%APPDATA%\ssh-channels-hub\config.toml`
 
@@ -122,14 +121,18 @@ dest_port = 8080
 
 3. **启动服务**
 
+   前台运行（默认，按 Ctrl+C 停止）：
+
    ```bash
    ssh-channels-hub start
    ```
 
-   前台运行（用于调试）：
+   后台运行（daemon 模式）：
 
    ```bash
-   ssh-channels-hub start --foreground
+   ssh-channels-hub start -D
+   # 或
+   ssh-channels-hub start --daemon
    ```
 
    启用调试日志：
@@ -156,8 +159,11 @@ dest_port = 8080
 
 6. **停止服务**
 
+   通过 IPC 向运行中的服务发送停止信号，服务会主动退出并清理；然后删除 run 文件（`.pid`、`.port`）。若使用非默认配置，需加 `--config`：
+
    ```bash
    ssh-channels-hub stop
+   ssh-channels-hub stop --config /path/to/config.toml
    ```
 
 ### 工作原理
@@ -168,8 +174,7 @@ dest_port = 8080
 本地应用 → localhost:18080 → SSH 隧道 → 远程服务器:127.0.0.1:8080
 ```
 
-- **本地端口** (`local_port`): 本地监听的端口，客户端连接此端口（可选）
-- **目标端口** (`dest_port`): 远程服务器上服务监听的端口（必需）
+- **ports** (`"本地端口:远程端口"`): 本地监听端口与远程目标端口，均为必填，例如 `"18080:8080"`
 - **目标地址** (`dest_host`): 远程服务器上的目标地址，默认为 `127.0.0.1`（可选）
 
 ### 注意事项
@@ -209,7 +214,7 @@ dest_port = 8080
 
 4. **防火墙**
 
-   确保本地防火墙允许监听 `local_port` 端口。
+   确保本地防火墙允许监听配置中的本地端口（`ports` 中的本地端口）。
 
 ### 常见使用场景
 
@@ -228,9 +233,8 @@ key_path = "~/.ssh/id_rsa"
 [[channels]]
 name = "mysql-tunnel"
 hostname = "db-server"
-local_port = 3306
+ports = "3306:3306"
 dest_host = "127.0.0.1"
-dest_port = 3306
 ```
 
 然后可以使用 MySQL 客户端连接 `localhost:3306`。
@@ -250,9 +254,8 @@ key_path = "~/.ssh/deploy_key"
 [[channels]]
 name = "web-tunnel"
 hostname = "web-server"
-local_port = 8080
+ports = "8080:80"
 dest_host = "127.0.0.1"
-dest_port = 80
 ```
 
 访问 `http://localhost:8080` 即可访问远程服务器的 Web 服务。
@@ -272,9 +275,8 @@ password = "your-password"
 [[channels]]
 name = "redis-tunnel"
 hostname = "redis-server"
-local_port = 6379
+ports = "6379:6379"
 dest_host = "127.0.0.1"
-dest_port = 6379
 ```
 
 ---
@@ -300,9 +302,8 @@ key_path = "~/.ssh/id_rsa"
 [[channels]]
 name = "app-logs"
 hostname = "app-server"
-local_port = 0  # 不需要本地端口
+ports = "9999:22"   # 占位示例；当前仅支持端口转发
 dest_host = "127.0.0.1"
-dest_port = 0  # 不需要目标端口
 ```
 
 **注意**: 对于日志监控，实际上应该使用 `session` 类型的 channel，而不是 `direct-tcpip`。当前配置系统主要支持端口转发场景。日志监控功能可能需要使用其他工具或等待后续功能支持。
@@ -357,23 +358,20 @@ password = "password2"
 [[channels]]
 name = "db-tunnel"
 hostname = "server1"
-local_port = 3306
+ports = "3306:3306"
 dest_host = "127.0.0.1"
-dest_port = 3306
 
 [[channels]]
 name = "web-tunnel"
 hostname = "server2"
-local_port = 8080
+ports = "8080:80"
 dest_host = "127.0.0.1"
-dest_port = 80
 
 [[channels]]
 name = "redis-tunnel"
 hostname = "server1"
-local_port = 6379
+ports = "6379:6379"
 dest_host = "127.0.0.1"
-dest_port = 6379
 ```
 
 ### 使用说明
@@ -437,7 +435,7 @@ dest_port = 6379
    使用 `--debug` 参数启动服务，查看详细日志：
 
    ```bash
-   ssh-channels-hub start --debug --foreground
+   ssh-channels-hub start --debug
    ```
 
 ### 配置错误
@@ -450,8 +448,8 @@ ssh-channels-hub validate
 
 常见错误：
 
-- `host` 字段引用了不存在的 `hosts.name`
-- 缺少必需的字段（如 `name`、`host`、`dest_port` 等）
+- `hostname` 字段引用了不存在的 `hosts.name`
+- 缺少必需的字段（如 `name`、`hostname`、`ports` 等）
 - TOML 格式错误（括号不匹配、引号不匹配等）
 
 ---
