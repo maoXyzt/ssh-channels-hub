@@ -270,16 +270,30 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Get default configuration file path
-    pub fn default_path() -> PathBuf {
+    /// Default config file candidates (first existing wins; if none exist, first is used).
+    /// Order: current directory `configs.toml`, then platform config dir `config.toml`.
+    pub fn default_path_candidates() -> Vec<PathBuf> {
+        let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mut candidates = vec![current_dir.join("configs.toml")];
         if let Some(mut path) = dirs::config_dir() {
             path.push("ssh-channels-hub");
             path.push("config.toml");
-            path
-        } else {
-            // Fallback to current directory if config dir is not available
-            PathBuf::from("config.toml")
+            candidates.push(path);
         }
+        candidates
+    }
+
+    /// Get default configuration file path: first candidate that exists, or first candidate.
+    pub fn default_path() -> PathBuf {
+        for path in Self::default_path_candidates() {
+            if path.exists() {
+                return path;
+            }
+        }
+        Self::default_path_candidates()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| PathBuf::from("configs.toml"))
     }
 
     /// Generate configuration from SSH config entries
