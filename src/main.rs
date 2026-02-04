@@ -462,27 +462,24 @@ fn state_display(state: &ServiceState) -> &'static str {
 /// Handle status command: connect to main process via IPC to get live status.
 async fn handle_status(config_path: PathBuf) -> AnyhowResult<()> {
     // Try IPC first: connect to running main process
-    match query_status_via_ipc(&config_path).await {
-        Ok(status) => {
-            println!("Service Status:");
-            println!("  State: {}", state_display(&status.state));
-            println!(
-                "  Active Channels: {}/{}",
-                status.active_channels, status.total_channels
-            );
-            println!("  Config: {}", config_path.display());
-            if let Ok(pid) = std::fs::read_to_string(pid_file_path(&config_path)) {
-                let pid = pid.trim();
-                if !pid.is_empty() {
-                    println!("  PID: {}", pid);
-                }
+    if let Ok(status) = query_status_via_ipc(&config_path).await {
+        println!("Service Status:");
+        println!("  State: {}", state_display(&status.state));
+        println!(
+            "  Active Channels: {}/{}",
+            status.active_channels, status.total_channels
+        );
+        println!("  Config: {}", config_path.display());
+        if let Ok(pid) = std::fs::read_to_string(pid_file_path(&config_path)) {
+            let pid = pid.trim();
+            if !pid.is_empty() {
+                println!("  PID: {}", pid);
             }
-            if let Ok(config) = AppConfig::from_file(&config_path) {
-                print_channel_list(&config.channels);
-            }
-            return Ok(());
         }
-        Err(_) => {}
+        if let Ok(config) = AppConfig::from_file(&config_path) {
+            print_channel_list(&config.channels);
+        }
+        return Ok(());
     }
 
     // No running process (IPC file missing or connection refused): show Stopped with config totals

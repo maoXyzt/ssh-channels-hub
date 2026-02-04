@@ -252,17 +252,13 @@ impl SshManager {
             "direct-tcpip" => {
                 return run_direct_tcpip_listener(&mut session, config, cancel).await;
             }
-            "forwarded-tcpip" => {
-                return Err(AppError::SshChannel(
-                    "forwarded-tcpip should be handled earlier".to_string(),
-                ));
-            }
-            _ => {
-                return Err(AppError::SshChannel(format!(
-                    "Unsupported channel type: {}",
-                    config.channel_type
-                )));
-            }
+            "forwarded-tcpip" => Err(AppError::SshChannel(
+                "forwarded-tcpip should be handled earlier".to_string(),
+            )),
+            _ => Err(AppError::SshChannel(format!(
+                "Unsupported channel type: {}",
+                config.channel_type
+            ))),
         }
     }
 }
