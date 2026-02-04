@@ -1,4 +1,4 @@
-use crate::config::AppConfig;
+use crate::config::{AppConfig, ChannelTypeParams};
 use crate::error::{AppError, Result};
 use crate::port_check::check_ports;
 use crate::ssh::SshManager;
@@ -99,48 +99,45 @@ impl ServiceManager {
 
             match manager.start().await {
                 Ok(_) => {
-                    if channel_config.channel_type == "forwarded-tcpip" {
-                        let remote_port = channel_config.params.remote_bind_port.unwrap_or(0);
-                        let local_dest = format!(
-                            "{}:{}",
-                            channel_config
-                                .params
-                                .destination_host
-                                .as_deref()
-                                .unwrap_or("127.0.0.1"),
-                            channel_config.params.destination_port.unwrap_or(0)
-                        );
-                        println!(
-                            "✓ Channel '{}' started: remote:{} -> local {} ({}@{})",
-                            channel_config.name,
-                            remote_port,
-                            local_dest,
-                            channel_config.username,
-                            channel_config.host
-                        );
-                    } else {
-                        let local_port_info = channel_config
-                            .params
-                            .local_port
-                            .expect("local_port must be set")
-                            .to_string();
-                        let dest_info = format!(
-                            "{}:{}",
-                            channel_config
-                                .params
-                                .destination_host
-                                .as_deref()
-                                .unwrap_or("127.0.0.1"),
-                            channel_config.params.destination_port.unwrap_or(0)
-                        );
-                        println!(
-                            "✓ Channel '{}' started: local:{} -> {} -> {}@{}",
-                            channel_config.name,
-                            local_port_info,
-                            dest_info,
-                            channel_config.username,
-                            channel_config.host
-                        );
+                    match &channel_config.params {
+                        ChannelTypeParams::ForwardedTcpIp {
+                            remote_bind_port,
+                            local_connect_host,
+                            local_connect_port,
+                        } => {
+                            let local_dest =
+                                format!("{}:{}", local_connect_host, local_connect_port);
+                            println!(
+                                "✓ Channel '{}' started: remote:{} -> local {} ({}@{})",
+                                channel_config.name,
+                                remote_bind_port,
+                                local_dest,
+                                channel_config.username,
+                                channel_config.host
+                            );
+                        }
+                        ChannelTypeParams::DirectTcpIp {
+                            local_port,
+                            dest_host,
+                            dest_port,
+                            ..
+                        } => {
+                            let dest_info = format!("{}:{}", dest_host, dest_port);
+                            println!(
+                                "✓ Channel '{}' started: local:{} -> {} -> {}@{}",
+                                channel_config.name,
+                                local_port,
+                                dest_info,
+                                channel_config.username,
+                                channel_config.host
+                            );
+                        }
+                        ChannelTypeParams::Session { .. } => {
+                            println!(
+                                "✓ Channel '{}' started (session) ({}@{})",
+                                channel_config.name, channel_config.username, channel_config.host
+                            );
+                        }
                     }
 
                     info!(channel = %channel_config.name, "Started SSH manager");
