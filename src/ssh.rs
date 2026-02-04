@@ -6,12 +6,12 @@ use russh_keys::key::KeyPair;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-/// SSH client handler
+/// SSH client handler for direct-tcpip (local forwarding)
 #[derive(Clone)]
 struct ClientHandler;
 
@@ -24,6 +24,62 @@ impl client::Handler for ClientHandler {
         _server_public_key: &russh_keys::key::PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
         Ok(true) // Accept any server key (in production, verify this)
+    }
+}
+
+/// Handler for forwarded-tcpip (remote forwarding, ssh -R style).
+/// When the server opens a forwarded-tcpip channel, connect to local_host:local_port and bridge.
+#[derive(Clone)]
+struct ReverseForwardHandler {
+    channel_name: String,
+    local_host: String,
+    local_port: u16,
+}
+
+#[async_trait::async_trait]
+impl client::Handler for ReverseForwardHandler {
+    type Error = russh::Error;
+
+    async fn check_server_key(
+        &mut self,
+        _server_public_key: &russh_keys::key::PublicKey,
+    ) -> std::result::Result<bool, Self::Error> {
+        Ok(true)
+    }
+
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        _connected_address: &str,
+        _connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        _session: &mut russh::client::Session,
+    ) -> std::result::Result<(), Self::Error> {
+        let local_addr = format!("{}:{}", self.local_host, self.local_port);
+        let channel_name = self.channel_name.clone();
+
+        match TcpStream::connect(&local_addr).await {
+            Ok(mut stream) => {
+                let mut channel_stream = channel.into_stream();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        tokio::io::copy_bidirectional(&mut stream, &mut channel_stream).await
+                    {
+                        debug!(channel = %channel_name, error = ?e, "Forwarded-tcpip relay ended");
+                    }
+                });
+            }
+            Err(e) => {
+                error!(
+                    channel = %channel_name,
+                    local = %local_addr,
+                    error = ?e,
+                    "Failed to connect to local address for forwarded-tcpip"
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -139,6 +195,10 @@ impl SshManager {
             "Establishing SSH connection"
         );
 
+        if config.channel_type == "forwarded-tcpip" {
+            return run_forwarded_tcpip(config, cancel).await;
+        }
+
         let config_builder = russh::client::Config::default();
 
         let config_arc = Arc::new(config_builder);
@@ -192,12 +252,108 @@ impl SshManager {
             "direct-tcpip" => {
                 return run_direct_tcpip_listener(&mut session, config, cancel).await;
             }
+            "forwarded-tcpip" => {
+                return Err(AppError::SshChannel(
+                    "forwarded-tcpip should be handled earlier".to_string(),
+                ));
+            }
             _ => {
                 return Err(AppError::SshChannel(format!(
                     "Unsupported channel type: {}",
                     config.channel_type
                 )));
             }
+        }
+    }
+}
+
+/// Run remote port forwarding (ssh -R style): ask server to bind a port, bridge incoming connections to local.
+async fn run_forwarded_tcpip(config: &ChannelConfig, cancel: CancellationToken) -> Result<()> {
+    let remote_bind_port = config.params.remote_bind_port.ok_or_else(|| {
+        AppError::SshChannel(
+            "forwarded-tcpip requires remote_bind_port (ports format: remote:local, e.g. 8022:80)"
+                .to_string(),
+        )
+    })?;
+
+    let local_host = config
+        .params
+        .destination_host
+        .as_deref()
+        .unwrap_or("127.0.0.1")
+        .to_string();
+    let local_port = config.params.destination_port.ok_or_else(|| {
+        AppError::SshChannel(
+            "forwarded-tcpip requires destination_port (local port to connect to)".to_string(),
+        )
+    })?;
+
+    let handler = ReverseForwardHandler {
+        channel_name: config.name.clone(),
+        local_host: local_host.clone(),
+        local_port,
+    };
+
+    let config_builder = russh::client::Config::default();
+    let config_arc = Arc::new(config_builder);
+
+    let mut session =
+        russh::client::connect(config_arc, (config.host.as_str(), config.port), handler)
+            .await
+            .map_err(|e| AppError::SshConnection(format!("Failed to connect: {}", e)))?;
+
+    info!(channel = %config.name, "SSH connection established, authenticating");
+
+    match &config.auth {
+        AuthConfig::Password { password } => {
+            session
+                .authenticate_password(&config.username, password)
+                .await
+                .map_err(|e| {
+                    AppError::SshAuthentication(format!("Password authentication failed: {}", e))
+                })?;
+        }
+        AuthConfig::Key {
+            key_path,
+            passphrase,
+        } => {
+            let key = load_secret_key(key_path, passphrase.as_deref()).await?;
+            session
+                .authenticate_publickey(&config.username, Arc::new(key))
+                .await
+                .map_err(|e| {
+                    AppError::SshAuthentication(format!("Key authentication failed: {}", e))
+                })?;
+        }
+    }
+
+    info!(channel = %config.name, "Requesting remote port forward (tcpip-forward)");
+
+    let bound_port = session
+        .tcpip_forward("", remote_bind_port as u32)
+        .await
+        .map_err(|e| AppError::SshChannel(format!("tcpip-forward failed: {}", e)))?;
+
+    let actual_port = if bound_port == 0 {
+        remote_bind_port
+    } else {
+        bound_port as u16
+    };
+
+    info!(
+        channel = %config.name,
+        remote_port = actual_port,
+        local = %format!("{}:{}", local_host, local_port),
+        "Remote forward active (incoming connections will be bridged to local)"
+    );
+
+    tokio::select! {
+        _ = cancel.cancelled() => {
+            info!(channel = %config.name, "Forward cancelled");
+            Ok(())
+        }
+        result = &mut session => {
+            result.map_err(|e| AppError::SshConnection(format!("Session ended: {}", e)))
         }
     }
 }

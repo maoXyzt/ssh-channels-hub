@@ -15,6 +15,14 @@ ports = "8080:80"            # Format: "local:dest" (local port 8080 -> dest por
 dest_host = "127.0.0.1"      # 可以显式指定，也可以省略（使用默认值）
 # listen_host = "127.0.0.1"   # 本地监听地址，默认 127.0.0.1；填 "0.0.0.0" 可接受任意网卡连接
 
+# Remote forward (ssh -R style): bind port on server, bridge to local
+# [[channels]]
+# name = "expose-local-web"
+# channel_type = "forwarded-tcpip"
+# hostname = "example-server"
+# ports = "8022:80"          # Format: "remote:local" (server port 8022 -> local 127.0.0.1:80)
+# dest_host = "127.0.0.1"    # Local host to connect to (default 127.0.0.1)
+
 # --- Reconnection settings ---
 # (applies to all channels)
 [reconnection]

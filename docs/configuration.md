@@ -105,22 +105,22 @@ passphrase = "optional-passphrase" # 可选，如果密钥有密码保护
 |------|------|------|
 | `name` | string | channel 的唯一标识名称 |
 | `hostname` | string | 引用的 host 名称（必须匹配 `hosts.name`） |
-| `ports` | string | 端口转发，格式为 `"本地端口:远程端口"`，例如 `"3306:3306"`、`"80:3923"` |
+| `ports` | string | 端口转发，格式见下方（依 `channel_type` 不同） |
 
 #### 可选字段
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `dest_host` | string | 远程服务器上的目标地址（默认：`127.0.0.1`） |
-| `listen_host` | string | 本地监听地址（默认：`127.0.0.1`）。填 `"0.0.0.0"` 时接受任意网卡连接 |
+| `channel_type` | string | `"direct-tcpip"`（本地转发，类似 ssh -L，默认）或 `"forwarded-tcpip"`（远程转发，类似 ssh -R） |
+| `dest_host` | string | direct-tcpip：远程目标地址；forwarded-tcpip：本地连接地址（默认：`127.0.0.1`） |
+| `listen_host` | string | 仅 direct-tcpip：本地监听地址（默认：`127.0.0.1`）。填 `"0.0.0.0"` 时接受任意网卡连接 |
 
 **说明**:
 
-- channels 用于端口转发（SSH 隧道）
-- `ports` 格式为 `"local:dest"`，本地端口与远程端口均为必填
-- 所有 channel 类型都是 `direct-tcpip`（端口转发）
-- `dest_host` 默认为 `"127.0.0.1"`，如果不需要指定其他地址，可以省略
-- `listen_host` 默认为 `"127.0.0.1"`（仅本机可连）；设为 `"0.0.0.0"` 时，其他机器可通过本机 IP 访问该端口
+- **direct-tcpip**（本地转发，默认）：`ports` 格式为 `"local:dest"`（本地监听端口:远程目标端口），例如 `"8080:80"`。流量：本地端口 → SSH 隧道 → 远程 `dest_host:dest_port`。
+- **forwarded-tcpip**（远程转发）：`ports` 格式为 `"remote:local"`（远程绑定端口:本地连接端口），例如 `"8022:80"`。流量：远程服务器端口 → SSH 隧道 → 本地 `dest_host:local_port`。等价于 `ssh -R 8022:127.0.0.1:80`。
+- `dest_host` 默认为 `"127.0.0.1"`。
+- `listen_host` 仅对 direct-tcpip 有效；设为 `"0.0.0.0"` 时，其他机器可通过本机 IP 访问该端口。
 
 ## 3. 配置示例
 
@@ -484,7 +484,10 @@ ssh-channels-hub start --debug --config /path/to/config.toml
 
 ### 8.1 端口转发说明
 
-当前版本仅支持端口转发功能。所有 channels 都是端口转发类型，用于建立安全的 TCP/IP 连接隧道。
+当前版本支持两种端口转发类型：
+
+- **direct-tcpip**（本地转发，默认）：本地监听端口，经 SSH 隧道转发到远程目标。等价于 `ssh -L`。
+- **forwarded-tcpip**（远程转发）：在 SSH 服务器上绑定端口，将连接经隧道转发到本机地址。等价于 `ssh -R`。
 
 #### 多 channels 配置
 

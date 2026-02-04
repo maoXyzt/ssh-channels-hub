@@ -410,23 +410,41 @@ async fn handle_restart(config_path: std::path::PathBuf, debug: bool) -> AnyhowR
     Ok(())
 }
 
-/// Print channel list from config (name, local -> dest_host:dest_port).
+/// Print channel list from config (name, local -> dest or remote -> local).
 fn print_channel_list(channels: &[config::ConnectionConfig]) {
     if channels.is_empty() {
         return;
     }
     println!("  Channels:");
     for c in channels {
-        let local = c
-            .ports
-            .local_port
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "?".to_string());
-        let dest = format!("{}:{}", c.dest_host, c.ports.dest_port);
-        println!(
-            "    - {} \tlisten {:>5} -> {} (host: {})",
-            c.name, local, dest, c.hostname
-        );
+        let is_remote = c
+            .channel_type
+            .as_deref()
+            .map(|t| t == "forwarded-tcpip")
+            .unwrap_or(false);
+        if is_remote {
+            let remote = c
+                .ports
+                .local_port
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            let local_dest = format!("{}:{}", c.dest_host, c.ports.dest_port);
+            println!(
+                "    - {} \tremote {:>5} -> local {} (host: {})",
+                c.name, remote, local_dest, c.hostname
+            );
+        } else {
+            let local = c
+                .ports
+                .local_port
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            let dest = format!("{}:{}", c.dest_host, c.ports.dest_port);
+            println!(
+                "    - {} \tlisten {:>5} -> {} (host: {})",
+                c.name, local, dest, c.hostname
+            );
+        }
     }
 }
 
@@ -598,6 +616,20 @@ async fn handle_test(config_path: std::path::PathBuf) -> AnyhowResult<()> {
     let mut all_passed = true;
 
     for conn in &config.channels {
+        let is_remote = conn
+            .channel_type
+            .as_deref()
+            .map(|t| t == "forwarded-tcpip")
+            .unwrap_or(false);
+
+        if is_remote {
+            print!("Channel '{}' (remote forward)... ", conn.name);
+            println!(
+                "skipped (test connects to local listener; use remote port on server to verify)"
+            );
+            continue;
+        }
+
         let local_port = conn.ports.local_port.expect("local_port must be set");
         let dest_port = conn.ports.dest_port;
         let dest_host = &conn.dest_host;

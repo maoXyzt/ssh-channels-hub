@@ -100,15 +100,21 @@ pub struct ConnectionConfig {
     pub name: String,
     /// Host reference (must match hosts.name)
     pub hostname: String,
-    /// Port forwarding configuration in format "local:dest"
-    /// Both local and destination ports are required
-    /// Example: "80:3923" (local port 80 -> dest port 3923)
+    /// Channel type: "direct-tcpip" (local forward, like ssh -L) or "forwarded-tcpip" (remote forward, like ssh -R).
+    /// Default: "direct-tcpip"
+    #[serde(default)]
+    pub channel_type: Option<String>,
+    /// Port forwarding configuration.
+    /// For direct-tcpip: "local:dest" (local listen port : remote dest port). Example: "80:3923"
+    /// For forwarded-tcpip: "remote:local" (remote bind port : local connect port). Example: "8022:80"
     pub ports: PortForward,
-    /// Destination host for direct-tcpip (defaults to 127.0.0.1)
+    /// For direct-tcpip: destination host on remote (defaults to 127.0.0.1).
+    /// For forwarded-tcpip: local host to connect to (defaults to 127.0.0.1).
     #[serde(default = "default_destination_host")]
     pub dest_host: String,
     /// Local listen address for direct-tcpip (defaults to 127.0.0.1).
     /// Use "0.0.0.0" to accept connections from any interface.
+    /// Ignored for forwarded-tcpip.
     #[serde(default = "default_listen_host")]
     pub listen_host: String,
 }
@@ -177,6 +183,8 @@ pub struct ChannelParams {
     /// For direct-tcpip: local listen address (defaults to 127.0.0.1). Use "0.0.0.0" for all interfaces.
     #[serde(default = "default_listen_host_option")]
     pub listen_host: Option<String>,
+    /// For forwarded-tcpip: remote port to bind on the SSH server (first in ports "remote:local").
+    pub remote_bind_port: Option<u16>,
     /// For session: command to execute
     pub command: Option<String>,
 }
@@ -196,6 +204,7 @@ impl Default for ChannelParams {
             destination_port: None,
             local_port: None,
             listen_host: Some(default_listen_host()),
+            remote_bind_port: None,
             command: None,
         }
     }
@@ -359,12 +368,28 @@ impl AppConfig {
                     ))
                 })?;
 
-            let params = ChannelParams {
-                destination_host: Some(conn.dest_host.clone()),
-                destination_port: Some(conn.ports.dest_port),
-                local_port: conn.ports.local_port,
-                listen_host: Some(conn.listen_host.clone()),
-                ..Default::default()
+            let channel_type = conn
+                .channel_type
+                .as_deref()
+                .unwrap_or("direct-tcpip")
+                .to_string();
+
+            // For forwarded-tcpip: ports = "remote:local" (remote bind port : local connect port)
+            let params = if channel_type == "forwarded-tcpip" {
+                ChannelParams {
+                    destination_host: Some(conn.dest_host.clone()),
+                    destination_port: Some(conn.ports.dest_port), // local port to connect to
+                    remote_bind_port: conn.ports.local_port, // first in "remote:local" = port on server
+                    ..Default::default()
+                }
+            } else {
+                ChannelParams {
+                    destination_host: Some(conn.dest_host.clone()),
+                    destination_port: Some(conn.ports.dest_port),
+                    local_port: conn.ports.local_port,
+                    listen_host: Some(conn.listen_host.clone()),
+                    ..Default::default()
+                }
             };
 
             channels.push(ChannelConfig {
@@ -373,7 +398,7 @@ impl AppConfig {
                 port: host_cfg.port,
                 username: host_cfg.username.clone(),
                 auth: host_cfg.auth.clone(),
-                channel_type: "direct-tcpip".to_string(),
+                channel_type,
                 params,
             });
         }
