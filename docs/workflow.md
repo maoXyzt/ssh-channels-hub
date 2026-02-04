@@ -42,50 +42,58 @@
    ├── 更新状态为 "Running" 或 "Error"
    └── 返回结果
    ↓
-4. 如果 foreground 模式
+4. 如果前台模式（默认）
+   ├── 绑定 IPC 监听（动态端口），写入 .port、.pid
    ├── 等待 Ctrl+C 信号
-   └── 调用 ServiceManager::stop()
+   └── 调用 ServiceManager::stop()，清理 .port、.pid
    ↓
-5. 如果 daemon 模式（未来）
-   ├── Fork 进程
-   ├── 写入 PID 文件
-   └── 退出父进程
+5. 如果 daemon 模式（start -D / --daemon）
+   ├── 子进程以非 daemon 方式启动，绑定 IPC，写入 .port、.pid
+   ├── 父进程退出
+   └── 子进程持续运行直至收到 stop 或崩溃
 ```
 
 #### Stop 命令
 
 ```
-1. 读取 PID 文件（未来）
+1. 读取 .port 文件（与 --config 同目录）
    ↓
-2. 发送停止信号（未来）
+2. 通过 TCP 连接 IPC 端口，发送 "stop\n"
    ↓
-3. 或直接调用 ServiceManager::stop()
+3. 守护进程收到后取消 CancellationToken，执行 ServiceManager::stop()
    ├── 设置状态为 "Stopping"
-   ├── 遍历所有 SshManager
-   │   └── 发送关闭信号
-   ├── 等待所有任务完成
-   └── 设置状态为 "Stopped"
+   ├── 遍历所有 SshManager，发送关闭信号
+   ├── 关闭本地 TCP 监听、等待任务结束
+   ├── 删除 .port、.pid
+   └── 进程退出
+   ↓
+4. 若 .port 不存在或连接失败，则仅尝试删除 .port、.pid
 ```
 
 #### Restart 命令
 
 ```
-1. 执行 Stop 命令
+1. 若 .port 存在，通过 IPC 发送 stop，等待守护进程退出
    ↓
-2. 等待 1 秒
+2. 清理 .port、.pid（若仍存在）
    ↓
-3. 执行 Start 命令
+3. 以 daemon 方式重新启动（spawn 子进程执行 start）
 ```
 
 #### Status 命令
 
 ```
-1. 读取服务状态（未来：从 PID 文件或 IPC）
+1. 读取 .port 文件，通过 TCP 连接 IPC，发送 "status\n"
    ↓
-2. 显示状态信息
-   ├── 服务状态
-   ├── 活动 channels 数
-   └── 总 channels 数
+2. 若连接成功，接收 TOML 格式状态（state, active_channels, total_channels）
+   ↓
+3. 显示状态信息
+   ├── 服务状态（含 emoji）
+   ├── 活动/总 channels 数
+   ├── 配置文件路径、PID
+   └── 已配置 channel 列表（name, local_port -> dest_host:dest_port）
+   ↓
+4. 若 .port 不存在或连接失败，显示 "Stopped" 及配置路径
 ```
 
 #### Validate 命令
@@ -150,15 +158,16 @@
 #### Direct-TCPIP channel
 
 ```
-1. channel_open_direct_tcpip()
-   ├── 目标地址
-   ├── 目标端口
-   ├── 源地址（本地）
-   └── 源端口（0 = 任意）
+1. 在本地绑定 TcpListener（listen_host:local_port）
    ↓
-2. 启动 channel 数据处理任务
-   ├── 转发数据
-   └── 检测 channel 关闭
+2. 循环 accept 新连接
+   ↓
+3. 对每个新连接：
+   ├── channel_open_direct_tcpip(目标地址, 目标端口, 源地址, 源端口)
+   ├── 使用 copy_bidirectional 在本地 TcpStream 与 ChannelStream 间转发数据
+   └── 连接关闭时关闭 channel
+   ↓
+4. 收到停止信号时取消 accept 循环并退出
 ```
 
 ## 3. 重连流程

@@ -212,13 +212,13 @@ impl ServiceManager {
         }
     }
 
-    /// Restart the service
-    pub async fn restart(&self) -> Result<()> {
-        info!("Restarting SSH Channels Hub service");
-        self.stop().await?;
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        self.start().await
-    }
+    // /// Restart the service
+    // pub async fn restart(&self) -> Result<()> {
+    //     info!("Restarting SSH Channels Hub service");
+    //     self.stop().await?;
+    //     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    //     self.start().await
+    // }
 
     /// Get service status
     pub async fn status(&self) -> ServiceStatus {

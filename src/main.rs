@@ -13,8 +13,17 @@ use config::AppConfig;
 use port_check::test_port_connection;
 use service::{ServiceManager, ServiceState};
 use ssh_config::{default_ssh_config_path, parse_ssh_config};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
-use tracing::{error, info};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -29,14 +38,14 @@ async fn main() -> AnyhowResult<()> {
 
     // Handle commands
     match cli.command {
-        Commands::Start { foreground } => {
-            handle_start(config_path, foreground).await?;
+        Commands::Start { daemon } => {
+            handle_start(config_path, daemon, cli.debug).await?;
         }
         Commands::Stop => {
-            handle_stop().await?;
+            handle_stop(config_path).await?;
         }
         Commands::Restart => {
-            handle_restart(config_path).await?;
+            handle_restart(config_path, cli.debug).await?;
         }
         Commands::Status => {
             handle_status(config_path).await?;
@@ -57,6 +66,34 @@ async fn main() -> AnyhowResult<()> {
     Ok(())
 }
 
+/// Spawn a detached child process that runs the service (foreground mode). Parent exits immediately.
+async fn spawn_daemon(config_path: &Path, debug: bool) -> AnyhowResult<()> {
+    let exe = std::env::current_exe().context("Get current executable")?;
+    let mut cmd = Command::new(&exe);
+    cmd.arg("start")
+        .arg("--config")
+        .arg(config_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if debug {
+        cmd.arg("--debug");
+    }
+
+    #[cfg(windows)]
+    {
+        // DETACHED_PROCESS = 8: child has no console and survives parent exit
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        cmd.creation_flags(DETACHED_PROCESS);
+    }
+
+    cmd.spawn().context("Spawn daemon process")?;
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    println!("Service started in daemon mode. Use 'ssh-channels-hub status' to check.");
+    Ok(())
+}
+
 /// Initialize logging subsystem
 fn init_logging(debug: bool) -> AnyhowResult<()> {
     let filter = if debug {
@@ -74,7 +111,16 @@ fn init_logging(debug: bool) -> AnyhowResult<()> {
 }
 
 /// Handle start command
-async fn handle_start(config_path: std::path::PathBuf, foreground: bool) -> AnyhowResult<()> {
+async fn handle_start(
+    config_path: std::path::PathBuf,
+    daemon: bool,
+    debug: bool,
+) -> AnyhowResult<()> {
+    if daemon {
+        spawn_daemon(&config_path, debug).await?;
+        return Ok(());
+    }
+
     info!("Loading configuration from: {}", config_path.display());
 
     let config = AppConfig::from_file(&config_path).context("Failed to load configuration")?;
@@ -89,87 +135,339 @@ async fn handle_start(config_path: std::path::PathBuf, foreground: bool) -> Anyh
         .await
         .context("Failed to start service")?;
 
-    if foreground {
-        info!("Service running in foreground. Press Ctrl+C to stop.");
+    // Start IPC listener so "status" command can query this process
+    let cancel = CancellationToken::new();
+    let port = start_ipc_listener(&config_path, Arc::clone(&service_manager), cancel.clone())
+        .await
+        .context("Failed to start IPC listener for status queries")?;
+    write_pid_file(&pid_file_path(&config_path)).context("Write PID file")?;
+    info!(
+        "Status query listener on 127.0.0.1:{} (status command will connect here)",
+        port
+    );
 
-        // Wait for shutdown signal
-        tokio::signal::ctrl_c()
-            .await
-            .context("Failed to listen for shutdown signal")?;
+    info!("Service running in foreground. Press Ctrl+C to stop.");
 
-        info!("Shutdown signal received, stopping service...");
-        service_manager
-            .stop()
-            .await
-            .context("Failed to stop service")?;
-    } else {
-        // In a real daemon implementation, you would:
-        // 1. Fork the process
-        // 2. Write PID file
-        // 3. Detach from terminal
-        // For now, we'll run in foreground with a note
-        info!("Daemon mode not yet implemented, running in foreground");
-        info!("Service running. Press Ctrl+C to stop.");
-
-        tokio::signal::ctrl_c()
-            .await
-            .context("Failed to listen for shutdown signal")?;
-
-        info!("Shutdown signal received, stopping service...");
-        service_manager
-            .stop()
-            .await
-            .context("Failed to stop service")?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = cancel.cancelled() => {}
     }
 
+    info!("Shutdown signal received, stopping service...");
+
+    cancel.cancel();
+    let _ = remove_run_files(&config_path);
+    service_manager
+        .stop()
+        .await
+        .context("Failed to stop service")?;
+
     Ok(())
 }
 
-/// Handle stop command
-async fn handle_stop() -> AnyhowResult<()> {
-    // In a real implementation, you would:
-    // 1. Read PID file
-    // 2. Send signal to the process
-    // For now, this is a placeholder
+// ----- IPC: status command connects to main process -----
+
+fn run_dir(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
+}
+
+fn pid_file_path(config_path: &Path) -> PathBuf {
+    run_dir(config_path).join("ssh-channels-hub.pid")
+}
+
+fn port_file_path(config_path: &Path) -> PathBuf {
+    run_dir(config_path).join("ssh-channels-hub.port")
+}
+
+/// Write PID file (plain text, one number) - standard for Linux daemons.
+fn write_pid_file(path: &Path) -> AnyhowResult<()> {
+    let pid = std::process::id();
+    std::fs::write(path, pid.to_string()).context("Write PID file")?;
+    Ok(())
+}
+
+/// Write port file (plain text, one number) so status command knows where to connect.
+fn write_port_file(path: &Path, port: u16) -> AnyhowResult<()> {
+    std::fs::write(path, port.to_string()).context("Write port file")?;
+    Ok(())
+}
+
+fn remove_run_files(config_path: &Path) -> AnyhowResult<()> {
+    for path in [pid_file_path(config_path), port_file_path(config_path)] {
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
+/// Serialize ServiceStatus to TOML (one-way protocol: server sends, client reads).
+fn status_to_toml(status: &service::ServiceStatus) -> String {
+    let state_str = match &status.state {
+        ServiceState::Running => "Running",
+        ServiceState::Stopped => "Stopped",
+        ServiceState::Starting => "Starting",
+        ServiceState::Stopping => "Stopping",
+        ServiceState::Error(_) => "Error",
+    };
+    format!(
+        "state = \"{}\"\nactive_channels = {}\ntotal_channels = {}",
+        state_str, status.active_channels, status.total_channels
+    )
+}
+
+/// Bind TCP on 127.0.0.1:0, write port to file, spawn task that accepts connections and responds with current status.
+async fn start_ipc_listener(
+    config_path: &Path,
+    service_manager: Arc<ServiceManager>,
+    cancel: CancellationToken,
+) -> AnyhowResult<u16> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .context("Bind IPC listener")?;
+    let port = listener
+        .local_addr()
+        .context("Get IPC listener port")?
+        .port();
+    write_port_file(&port_file_path(config_path), port)?;
+
+    let config_path = config_path.to_path_buf();
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    debug!("IPC listener cancelled");
+                    break;
+                }
+                accept_result = listener.accept() => {
+                    match accept_result {
+                        Ok((stream, _addr)) => {
+                            let manager = Arc::clone(&service_manager);
+                            let shutdown = cancel.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = handle_ipc_connection(stream, manager, shutdown).await {
+                                    debug!(error = ?e, "IPC connection handler error");
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            if !cancel.is_cancelled() {
+                                debug!(error = ?e, "IPC accept error");
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let _ = remove_run_files(&config_path);
+    });
+
+    Ok(port)
+}
+
+/// Read one line (until \n) from stream.
+async fn read_line_async(stream: &mut TcpStream) -> AnyhowResult<String> {
+    let mut buf = Vec::new();
+    let mut one = [0u8; 1];
+    loop {
+        let n = stream.read(&mut one).await?;
+        if n == 0 {
+            break;
+        }
+        if one[0] == b'\n' {
+            break;
+        }
+        buf.push(one[0]);
+    }
+    Ok(String::from_utf8(buf).unwrap_or_default())
+}
+
+/// Handle one IPC connection: read command line ("status" or "stop"). "stop" -> cancel shutdown and reply "ok"; else -> reply status TOML.
+async fn handle_ipc_connection(
+    mut stream: TcpStream,
+    service_manager: Arc<ServiceManager>,
+    shutdown: CancellationToken,
+) -> AnyhowResult<()> {
+    let cmd = read_line_async(&mut stream).await?.trim().to_lowercase();
+    if cmd == "stop" {
+        shutdown.cancel();
+        stream.write_all(b"ok\n").await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    let status = service_manager.status().await;
+    let body = status_to_toml(&status);
+    stream.write_all(body.as_bytes()).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+/// Read port file (plain text) and connect to main process to fetch status.
+async fn query_status_via_ipc(config_path: &Path) -> AnyhowResult<service::ServiceStatus> {
+    let port_path = port_file_path(config_path);
+    let content =
+        std::fs::read_to_string(&port_path).context("Read port file (is service running?)")?;
+    let port: u16 = content.trim().parse().context("Parse port file")?;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .context("Connect to service (is it running?)")?;
+    stream.write_all(b"status\n").await?;
+    stream.shutdown().await?;
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await?;
+    let body = String::from_utf8(buf).context("IPC response not UTF-8")?;
+    parse_status_toml(&body).context("Parse status response")
+}
+
+#[derive(serde::Deserialize)]
+struct StatusResponse {
+    state: String,
+    active_channels: usize,
+    total_channels: usize,
+}
+
+fn parse_status_toml(s: &str) -> AnyhowResult<service::ServiceStatus> {
+    let r: StatusResponse = toml::from_str(s).context("Parse status TOML")?;
+    let state = match r.state.as_str() {
+        "Running" => ServiceState::Running,
+        "Stopped" => ServiceState::Stopped,
+        "Starting" => ServiceState::Starting,
+        "Stopping" => ServiceState::Stopping,
+        "Error" => ServiceState::Error(String::new()),
+        _ => return Err(anyhow::anyhow!("Unknown state: {}", r.state)),
+    };
+    Ok(service::ServiceStatus {
+        state,
+        active_channels: r.active_channels,
+        total_channels: r.total_channels,
+    })
+}
+
+/// Send "stop" via IPC so daemon exits gracefully; then remove run files.
+async fn send_stop_via_ipc(config_path: &Path) -> AnyhowResult<()> {
+    let port_path = port_file_path(config_path);
+    let content =
+        std::fs::read_to_string(&port_path).context("Read port file (is service running?)")?;
+    let port: u16 = content.trim().parse().context("Parse port file")?;
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .context("Connect to service (is it running?)")?;
+    stream.write_all(b"stop\n").await?;
+    stream.shutdown().await?;
+    let mut buf = vec![0u8; 8];
+    let _ = stream.read(&mut buf).await;
+    Ok(())
+}
+
+/// Handle stop command: send "stop" via IPC so daemon exits, then remove run files.
+async fn handle_stop(config_path: PathBuf) -> AnyhowResult<()> {
     info!("Stop command received");
-    info!("Note: Full daemon stop functionality requires PID file management");
+
+    if port_file_path(&config_path).exists() {
+        match send_stop_via_ipc(&config_path).await {
+            Ok(()) => {
+                println!("Sent stop signal to service.");
+                tokio::time::sleep(Duration::from_millis(600)).await;
+            }
+            Err(e) => {
+                println!("⚠ Could not reach service via IPC: {}", e);
+            }
+        }
+    }
+
+    remove_run_files(&config_path).context("Remove run files")?;
+    println!("Service stopped (run files removed).");
     Ok(())
 }
 
-/// Handle restart command
-async fn handle_restart(config_path: std::path::PathBuf) -> AnyhowResult<()> {
+/// Handle restart command: stop running service via IPC (if any), then start as daemon.
+async fn handle_restart(config_path: std::path::PathBuf, debug: bool) -> AnyhowResult<()> {
     info!("Restart command received");
 
-    // In a real implementation, you would:
-    // 1. Read PID file to find running service
-    // 2. Connect to the service instance
-    // 3. Call service_manager.restart()
-    // For now, we'll load config and create a new service manager
-    info!("Loading configuration from: {}", config_path.display());
+    if port_file_path(&config_path).exists() {
+        match send_stop_via_ipc(&config_path).await {
+            Ok(()) => {
+                println!("Sent stop signal to running service.");
+                tokio::time::sleep(Duration::from_millis(700)).await;
+            }
+            Err(e) => {
+                info!("No running service or IPC failed: {}", e);
+            }
+        }
+        let _ = remove_run_files(&config_path);
+    }
 
-    let config = AppConfig::from_file(&config_path).context("Failed to load configuration")?;
-
-    let service_manager = Arc::new(ServiceManager::new(config));
-
-    // Use the restart method
-    service_manager
-        .restart()
+    println!("Starting service (daemon mode)...");
+    spawn_daemon(&config_path, debug)
         .await
-        .context("Failed to restart service")?;
-
-    info!("Service restarted successfully");
+        .context("Failed to start service after restart")?;
+    println!("Service restarted.");
     Ok(())
 }
 
-/// Handle status command
-async fn handle_status(config_path: std::path::PathBuf) -> AnyhowResult<()> {
-    // In a real implementation, you would:
-    // 1. Read PID file to find running service
-    // 2. Connect to the service instance via IPC
-    // 3. Call service_manager.status()
-    // For now, we'll try to load config and show status
-    // Note: This will only work if the service is running in the same process
+/// Print channel list from config (name, local -> dest_host:dest_port).
+fn print_channel_list(channels: &[config::ConnectionConfig]) {
+    if channels.is_empty() {
+        return;
+    }
+    println!("  Channels:");
+    for c in channels {
+        let local = c
+            .ports
+            .local_port
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "?".to_string());
+        let dest = format!("{}:{}", c.dest_host, c.ports.dest_port);
+        println!(
+            "    - {} \tlisten {:>5} -> {} (host: {})",
+            c.name, local, dest, c.hostname
+        );
+    }
+}
 
+/// Format ServiceState with emoji for status output.
+fn state_display(state: &ServiceState) -> &'static str {
+    match state {
+        ServiceState::Running => "🟢 Running",
+        ServiceState::Stopped => "🔴 Stopped",
+        ServiceState::Starting => "🟡 Starting",
+        ServiceState::Stopping => "🟠 Stopping",
+        ServiceState::Error(_) => "❌ Error",
+    }
+}
+
+/// Handle status command: connect to main process via IPC to get live status.
+async fn handle_status(config_path: PathBuf) -> AnyhowResult<()> {
+    // Try IPC first: connect to running main process
+    match query_status_via_ipc(&config_path).await {
+        Ok(status) => {
+            println!("Service Status:");
+            println!("  State: {}", state_display(&status.state));
+            println!(
+                "  Active Channels: {}/{}",
+                status.active_channels, status.total_channels
+            );
+            println!("  Config: {}", config_path.display());
+            if let Ok(pid) = std::fs::read_to_string(pid_file_path(&config_path)) {
+                let pid = pid.trim();
+                if !pid.is_empty() {
+                    println!("  PID: {}", pid);
+                }
+            }
+            if let Ok(config) = AppConfig::from_file(&config_path) {
+                print_channel_list(&config.channels);
+            }
+            return Ok(());
+        }
+        Err(_) => {}
+    }
+
+    // No running process (IPC file missing or connection refused): show Stopped with config totals
     if !config_path.exists() {
         println!("✗ Service not configured (config file not found)");
         return Ok(());
@@ -177,22 +475,13 @@ async fn handle_status(config_path: std::path::PathBuf) -> AnyhowResult<()> {
 
     match AppConfig::from_file(&config_path) {
         Ok(config) => {
-            let service_manager = Arc::new(ServiceManager::new(config));
-            let status = service_manager.status().await;
-
+            let total = config.channels.len();
             println!("Service Status:");
-            println!("  State: {:?}", status.state);
-            println!(
-                "  Active Channels: {}/{}",
-                status.active_channels, status.total_channels
-            );
-
-            // Note: This shows the status of a newly created manager, not the running service
-            // Full functionality requires IPC or PID file management
-            if status.active_channels == 0 && status.state == ServiceState::Stopped {
-                println!("  Note: Service appears to be stopped");
-                println!("  Note: Full status requires connecting to running service instance");
-            }
+            println!("  State: {}", state_display(&ServiceState::Stopped));
+            println!("  Active Channels: 0/{}", total);
+            println!("  Config: {}", config_path.display());
+            println!("  Note: Service is not running. Start with: ssh-channels-hub start");
+            print_channel_list(&config.channels);
         }
         Err(e) => {
             println!("✗ Failed to load configuration: {}", e);

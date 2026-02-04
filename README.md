@@ -9,7 +9,7 @@ Cross-platform (Windows, Linux), written in Rust.
 - **Port forwarding**: Listen on local ports and forward traffic to remote hosts via SSH tunnels (direct-tcpip).
 - **Hosts + channels**: Define SSH hosts once, then reference them in channel configs (hostname, ports, dest_host, listen_host).
 - **Automatic reconnection**: Reconnect with configurable backoff when the connection is lost.
-- **Background service**: Run in foreground or background; CLI to start/stop/restart and show status.
+- **Foreground / daemon**: Default `start` runs in foreground; `start -D` runs as daemon (detached). Stop and restart use IPC so the process exits cleanly.
 - **Config validation**: Validate config file; generate config from `~/.ssh/config`.
 
 ## Usage
@@ -26,33 +26,38 @@ The binary will be at `target/release/ssh-channels-hub` (or `ssh-channels-hub.ex
 
 ### Configuration
 
-1. **Config file location** (default):
+1. **Config file location** (default; first existing wins):
+   - **Current directory**: `./configs.toml`
    - **Linux/macOS**: `~/.config/ssh-channels-hub/config.toml`
    - **Windows**: `%APPDATA%\ssh-channels-hub\config.toml`
 
 2. **Copy the example config**:
 
    ```bash
+   cp configs.example.toml configs.toml
+   # or into platform dir:
    mkdir -p ~/.config/ssh-channels-hub
    cp configs.example.toml ~/.config/ssh-channels-hub/config.toml
    ```
 
-3. Edit the file with your hosts and channels. See [Configuration](docs/configuration.md) for details.
+3. Edit the file with your hosts and channels. Use `--config /path/to/config.toml` to override. See [Configuration](docs/configuration.md) for details.
 
 ### Basic Commands
 
 #### Start the service
 
-Foreground (for testing):
-
-```bash
-ssh-channels-hub start --foreground
-```
-
-Background:
+**Foreground** (default; press Ctrl+C to stop):
 
 ```bash
 ssh-channels-hub start
+```
+
+**Daemon** (background; spawns detached process):
+
+```bash
+ssh-channels-hub start -D
+# or
+ssh-channels-hub start --daemon
 ```
 
 Custom config:
@@ -69,11 +74,16 @@ ssh-channels-hub start --debug
 
 #### Stop the service
 
+Sends a stop signal via IPC so the service exits gracefully, then removes run files (`.pid`, `.port`). Use the same `--config` as start if you use a non-default config.
+
 ```bash
 ssh-channels-hub stop
+ssh-channels-hub stop --config /path/to/config.toml
 ```
 
 #### Restart the service
+
+Stops the running service (via IPC if running), then starts it again as a **daemon**. Use the same `--config` as the running service.
 
 ```bash
 ssh-channels-hub restart
@@ -81,8 +91,11 @@ ssh-channels-hub restart
 
 #### Check service status
 
+Connects to the running process via IPC and shows state (with emoji), active channels, config path, PID, and channel list. If the service is not running, shows Stopped and channel list from config.
+
 ```bash
 ssh-channels-hub status
+ssh-channels-hub status --config /path/to/config.toml
 ```
 
 #### Test channels
@@ -165,7 +178,7 @@ listen_host = "0.0.0.0"
 - **Port in use**: Change `ports` (e.g. use 18080 instead of 80) or stop the app using the port.
 - **Bind 80 on Windows**: Often requires running as Administrator.
 - **Config errors**: Run `ssh-channels-hub validate`.
-- **Debug**: Use `ssh-channels-hub start --debug`.
+- **Debug**: Use `ssh-channels-hub start --debug` or `--debug` with any command.
 - **Key permissions**: Ensure SSH key file has correct permissions (e.g. 600).
 
 More details: [Documentation](docs/README.md), [How to use](docs/HowToUse.md), [Configuration](docs/configuration.md).

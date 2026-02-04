@@ -22,9 +22,9 @@ pub struct Cli {
 pub enum Commands {
     /// Start the service
     Start {
-        /// Run in foreground (don't daemonize)
-        #[arg(short, long)]
-        foreground: bool,
+        /// Run as daemon in background (spawns detached child process)
+        #[arg(short = 'D', long)]
+        daemon: bool,
     },
     /// Stop the service
     Stop,
