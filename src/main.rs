@@ -423,12 +423,16 @@ fn print_channel_list(channels: &[config::ConnectionConfig]) {
             .map(|t| t == "forwarded-tcpip")
             .unwrap_or(false);
         if is_remote {
-            let remote = c
-                .ports
-                .local_port
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "?".to_string());
-            let local_dest = format!("{}:{}", c.dest_host, c.ports.dest_port);
+            // forwarded-tcpip: ports = "local:remote" -> remote bind port = dest_port, local connect = dest_host:local_port
+            let remote = c.ports.dest_port.to_string();
+            let local_dest = format!(
+                "{}:{}",
+                c.dest_host,
+                c.ports
+                    .local_port
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "?".to_string())
+            );
             println!(
                 "    - {} \tremote {:>5} -> local {} (host: {})",
                 c.name, remote, local_dest, c.hostname

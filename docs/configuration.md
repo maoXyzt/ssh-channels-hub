@@ -117,8 +117,8 @@ passphrase = "optional-passphrase" # 可选，如果密钥有密码保护
 
 **说明**:
 
-- **direct-tcpip**（本地转发，默认）：`ports` 格式为 `"local:dest"`（本地监听端口:远程目标端口），例如 `"8080:80"`。流量：本地端口 → SSH 隧道 → 远程 `dest_host:dest_port`。
-- **forwarded-tcpip**（远程转发）：`ports` 格式为 `"remote:local"`（远程绑定端口:本地连接端口），例如 `"8022:80"`。流量：远程服务器端口 → SSH 隧道 → 本地 `dest_host:local_port`。等价于 `ssh -R 8022:127.0.0.1:80`。
+- **direct-tcpip**（本地转发，默认）：`ports` 格式为 `"本地端口:远程端口"`，例如 `"8080:80"`。流量：本地端口 → SSH 隧道 → 远程 `dest_host:dest_port`。
+- **forwarded-tcpip**（远程转发）：`ports` 格式同样为 `"本地端口:远程端口"`，例如 `"80:8022"`（本地 80 → 远程服务器绑定 8022）。流量：远程服务器端口 → SSH 隧道 → 本地 `dest_host:local_port`。等价于 `ssh -R 8022:127.0.0.1:80`。
 - `dest_host` 默认为 `"127.0.0.1"`。
 - `listen_host` 仅对 direct-tcpip 有效；设为 `"0.0.0.0"` 时，其他机器可通过本机 IP 访问该端口。
 
@@ -273,6 +273,33 @@ hostname = "redis-server"
 ports = "6379:6379"
 dest_host = "127.0.0.1"
 ```
+
+### 3.4.1 远程转发（forwarded-tcpip）配置示例
+
+将本机服务暴露到 SSH 服务器上的端口（类似 `ssh -R`）。`ports` 格式为 **「本地端口:远程端口」**：第一项为本机要连接到的端口，第二项为在服务器上绑定的端口。
+
+```toml
+[[hosts]]
+name = "jump-server"
+host = "jump.example.com"
+port = 22
+username = "user"
+
+[hosts.auth]
+type = "key"
+key_path = "~/.ssh/id_rsa"
+
+# 远程转发：服务器上 8022 → 本机 127.0.0.1:80
+[[channels]]
+name = "expose-local-web"
+channel_type = "forwarded-tcpip"
+hostname = "jump-server"
+ports = "80:8022"             # 本地端口:远程端口（本机 80 ← 服务器 8022）
+dest_host = "127.0.0.1"      # 可选，本机要连接到的地址，默认 127.0.0.1
+```
+
+- 启动后，程序会向服务器发送 `tcpip-forward`，在服务器上绑定 `8022`。
+- 当有人连接「服务器:8022」时，流量经 SSH 隧道转发到本机 `127.0.0.1:80`。
 
 ### 3.5 多 hosts 使用不同认证方式
 

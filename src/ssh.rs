@@ -214,11 +214,9 @@ impl SshManager {
             ChannelTypeParams::DirectTcpIp { .. } => {
                 return run_direct_tcpip_listener(&mut session, config, cancel).await;
             }
-            ChannelTypeParams::ForwardedTcpIp { .. } => {
-                Err(AppError::SshChannel(
-                    "forwarded-tcpip should be handled earlier".to_string(),
-                ))
-            }
+            ChannelTypeParams::ForwardedTcpIp { .. } => Err(AppError::SshChannel(
+                "forwarded-tcpip should be handled earlier".to_string(),
+            )),
         }
     }
 }
