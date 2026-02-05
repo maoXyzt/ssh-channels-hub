@@ -363,7 +363,7 @@ impl AppConfig {
                     }
                 }
                 "session" => ChannelTypeParams::Session { command: None },
-                _ => {
+                "direct-tcpip" => {
                     let local_port = conn.ports.local_port.ok_or_else(|| {
                         AppError::Config(format!(
                             "Channel '{}': direct-tcpip requires ports local:remote (e.g. 8080:80)",
@@ -376,6 +376,12 @@ impl AppConfig {
                         dest_host: conn.dest_host.clone(),
                         dest_port: conn.ports.dest_port,
                     }
+                }
+                unknown => {
+                    return Err(AppError::Config(format!(
+                        "Channel '{}': unknown channel_type '{}', expected 'direct-tcpip', 'forwarded-tcpip', or 'session'",
+                        conn.name, unknown
+                    )));
                 }
             };
 
