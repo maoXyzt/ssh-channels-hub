@@ -1,4 +1,4 @@
-// Test to verify TOML parsing supports different auth per channel
+// Test to verify TOML parsing supports different auth per channel (via host reference)
 
 use ssh_channels_hub::config::AppConfig;
 
@@ -11,52 +11,63 @@ initial_delay_secs = 1
 max_delay_secs = 30
 use_exponential_backoff = true
 
-# Channel 1: Password authentication
-[[channels]]
-name = "test-password"
+[[hosts]]
+name = "host-password"
 host = "example.com"
 port = 22
 username = "user1"
-channel_type = "session"
 
-[channels.auth]
+[hosts.auth]
 type = "password"
 password = "test-password-123"
 
-# Channel 2: Key authentication with default key
-[[channels]]
-name = "test-key-default"
+[[hosts]]
+name = "host-key-default"
 host = "example.com"
 port = 22
 username = "user2"
-channel_type = "session"
 
-[channels.auth]
+[hosts.auth]
 type = "key"
 key_path = "~/.ssh/id_rsa"
 
-# Channel 3: Key authentication with different key
-[[channels]]
-name = "test-key-custom"
+[[hosts]]
+name = "host-key-custom"
 host = "example.com"
 port = 22
 username = "user3"
-channel_type = "session"
 
-[channels.auth]
+[hosts.auth]
 type = "key"
 key_path = "~/.ssh/custom_key"
 passphrase = "custom-passphrase"
+
+[[channels]]
+name = "test-password"
+hostname = "host-password"
+ports = "8080:80"
+
+[[channels]]
+name = "test-key-default"
+hostname = "host-key-default"
+ports = "8081:80"
+
+[[channels]]
+name = "test-key-custom"
+hostname = "host-key-custom"
+ports = "8082:80"
 "#;
 
     let config: AppConfig =
         toml::from_str(toml_content).expect("Failed to parse TOML configuration");
 
-    // Verify we have 3 channels
+    assert_eq!(config.hosts.len(), 3);
     assert_eq!(config.channels.len(), 3);
 
-    // Verify Channel 1: Password authentication
-    let ch1 = &config.channels[0];
+    let channels = config.build_channels().expect("build_channels");
+
+    // Channel 1: Password authentication (from host-password)
+    let ch1 = &channels[0];
     assert_eq!(ch1.name, "test-password");
     assert_eq!(ch1.username, "user1");
     match &ch1.auth {
@@ -66,8 +77,8 @@ passphrase = "custom-passphrase"
         _ => panic!("Channel 1 should use password authentication"),
     }
 
-    // Verify Channel 2: Key authentication with default key
-    let ch2 = &config.channels[1];
+    // Channel 2: Key authentication with default key
+    let ch2 = &channels[1];
     assert_eq!(ch2.name, "test-key-default");
     assert_eq!(ch2.username, "user2");
     match &ch2.auth {
@@ -81,8 +92,8 @@ passphrase = "custom-passphrase"
         _ => panic!("Channel 2 should use key authentication"),
     }
 
-    // Verify Channel 3: Key authentication with different key
-    let ch3 = &config.channels[2];
+    // Channel 3: Key authentication with different key
+    let ch3 = &channels[2];
     assert_eq!(ch3.name, "test-key-custom");
     assert_eq!(ch3.username, "user3");
     match &ch3.auth {
@@ -96,7 +107,6 @@ passphrase = "custom-passphrase"
         _ => panic!("Channel 3 should use key authentication"),
     }
 
-    // Verify channels 2 and 3 use different keys
     if let (
         ssh_channels_hub::config::AuthConfig::Key { key_path: k2, .. },
         ssh_channels_hub::config::AuthConfig::Key { key_path: k3, .. },
@@ -112,7 +122,6 @@ fn test_load_config_from_file() {
 
     let test_config_path = PathBuf::from("tests/test_multi_auth.toml");
 
-    // Only run this test if the test config file exists
     if test_config_path.exists() {
         let config = AppConfig::from_file(&test_config_path)
             .expect("Failed to load test configuration file");
@@ -122,15 +131,11 @@ fn test_load_config_from_file() {
             "Config should have at least one channel"
         );
 
-        // Verify each channel has its own auth configuration
-        for channel in &config.channels {
+        let channels = config.build_channels().expect("build_channels");
+        for channel in &channels {
             match &channel.auth {
-                ssh_channels_hub::config::AuthConfig::Password { .. } => {
-                    // Password auth is valid
-                }
-                ssh_channels_hub::config::AuthConfig::Key { .. } => {
-                    // Key auth is valid
-                }
+                ssh_channels_hub::config::AuthConfig::Password { .. } => {}
+                ssh_channels_hub::config::AuthConfig::Key { .. } => {}
             }
         }
     }
