@@ -281,7 +281,9 @@ async fn connect_and_authenticate<H>(
 where
     H: client::Handler + Send + 'static,
 {
-    let config_builder = russh::client::Config::default();
+    let mut config_builder = russh::client::Config::default();
+    config_builder.keepalive_interval = Some(Duration::from_secs(15));
+    config_builder.keepalive_max = 3;
     let config_arc = Arc::new(config_builder);
 
     let mut session =
