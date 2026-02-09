@@ -100,15 +100,21 @@ pub struct ConnectionConfig {
     pub name: String,
     /// Host reference (must match hosts.name)
     pub hostname: String,
-    /// Port forwarding configuration in format "local:dest"
-    /// Both local and destination ports are required
-    /// Example: "80:3923" (local port 80 -> dest port 3923)
+    /// Channel type: "direct-tcpip" (local forward, like ssh -L) or "forwarded-tcpip" (remote forward, like ssh -R).
+    /// Default: "direct-tcpip"
+    #[serde(default)]
+    pub channel_type: Option<String>,
+    /// Port forwarding configuration.
+    /// For direct-tcpip: "local:dest" (local listen port : remote dest port). Example: "80:3923"
+    /// For forwarded-tcpip: "remote:local" (remote bind port : local connect port). Example: "8022:80"
     pub ports: PortForward,
-    /// Destination host for direct-tcpip (defaults to 127.0.0.1)
+    /// For direct-tcpip: destination host on remote (defaults to 127.0.0.1).
+    /// For forwarded-tcpip: local host to connect to (defaults to 127.0.0.1).
     #[serde(default = "default_destination_host")]
     pub dest_host: String,
     /// Local listen address for direct-tcpip (defaults to 127.0.0.1).
     /// Use "0.0.0.0" to accept connections from any interface.
+    /// Ignored for forwarded-tcpip.
     #[serde(default = "default_listen_host")]
     pub listen_host: String,
 }
@@ -122,29 +128,43 @@ fn default_destination_host() -> String {
 }
 
 /// SSH channel configuration (runtime)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ChannelConfig {
     /// Channel name/identifier
     pub name: String,
     /// Remote host address
     pub host: String,
     /// SSH port (defaults to 22)
-    #[serde(default = "default_ssh_port")]
     pub port: u16,
     /// SSH username
     pub username: String,
     /// Authentication method
     pub auth: AuthConfig,
-    /// Channel type (e.g., "session", "direct-tcpip")
-    #[serde(default = "default_channel_type")]
+    /// Channel type string for logging and status display (e.g. "direct-tcpip", "forwarded-tcpip")
+    #[allow(dead_code)]
     pub channel_type: String,
-    /// Additional channel parameters
-    #[serde(default)]
-    pub params: ChannelParams,
+    /// Parameters specific to the channel type; semantics are explicit per variant
+    pub params: ChannelTypeParams,
 }
 
-fn default_channel_type() -> String {
-    "session".to_string()
+/// Parameters for each channel type. Makes intent explicit and type-safe.
+#[derive(Debug, Clone)]
+pub enum ChannelTypeParams {
+    /// Local port forwarding (ssh -L): listen locally, forward to remote dest.
+    DirectTcpIp {
+        listen_host: String,
+        local_port: u16,
+        dest_host: String,
+        dest_port: u16,
+    },
+    /// Remote port forwarding (ssh -R): server binds port, we connect to local and bridge.
+    ForwardedTcpIp {
+        remote_bind_port: u16,
+        local_connect_host: String,
+        local_connect_port: u16,
+    },
+    /// Session channel (e.g. shell or single command).
+    Session { command: Option<String> },
 }
 
 /// Authentication configuration
@@ -162,43 +182,6 @@ pub enum AuthConfig {
         /// Optional passphrase for the key
         passphrase: Option<String>,
     },
-}
-
-/// Channel parameters
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelParams {
-    /// For direct-tcpip: destination host (defaults to 127.0.0.1)
-    #[serde(default = "default_destination_host_option")]
-    pub destination_host: Option<String>,
-    /// For direct-tcpip: destination port
-    pub destination_port: Option<u16>,
-    /// For direct-tcpip: local/source port
-    pub local_port: Option<u16>,
-    /// For direct-tcpip: local listen address (defaults to 127.0.0.1). Use "0.0.0.0" for all interfaces.
-    #[serde(default = "default_listen_host_option")]
-    pub listen_host: Option<String>,
-    /// For session: command to execute
-    pub command: Option<String>,
-}
-
-fn default_listen_host_option() -> Option<String> {
-    Some(default_listen_host())
-}
-
-fn default_destination_host_option() -> Option<String> {
-    Some(default_destination_host())
-}
-
-impl Default for ChannelParams {
-    fn default() -> Self {
-        Self {
-            destination_host: Some(default_destination_host()),
-            destination_port: None,
-            local_port: None,
-            listen_host: Some(default_listen_host()),
-            command: None,
-        }
-    }
 }
 
 /// Application configuration
@@ -359,12 +342,47 @@ impl AppConfig {
                     ))
                 })?;
 
-            let params = ChannelParams {
-                destination_host: Some(conn.dest_host.clone()),
-                destination_port: Some(conn.ports.dest_port),
-                local_port: conn.ports.local_port,
-                listen_host: Some(conn.listen_host.clone()),
-                ..Default::default()
+            let channel_type = conn
+                .channel_type
+                .as_deref()
+                .unwrap_or("direct-tcpip")
+                .to_string();
+
+            let params = match channel_type.as_str() {
+                "forwarded-tcpip" => {
+                    let local_connect_port = conn.ports.local_port.ok_or_else(|| {
+                        AppError::Config(format!(
+                            "Channel '{}': forwarded-tcpip requires ports local:remote (e.g. 80:8022)",
+                            conn.name
+                        ))
+                    })?;
+                    ChannelTypeParams::ForwardedTcpIp {
+                        remote_bind_port: conn.ports.dest_port,
+                        local_connect_host: conn.dest_host.clone(),
+                        local_connect_port,
+                    }
+                }
+                "session" => ChannelTypeParams::Session { command: None },
+                "direct-tcpip" => {
+                    let local_port = conn.ports.local_port.ok_or_else(|| {
+                        AppError::Config(format!(
+                            "Channel '{}': direct-tcpip requires ports local:remote (e.g. 8080:80)",
+                            conn.name
+                        ))
+                    })?;
+                    ChannelTypeParams::DirectTcpIp {
+                        listen_host: conn.listen_host.clone(),
+                        local_port,
+                        dest_host: conn.dest_host.clone(),
+                        dest_port: conn.ports.dest_port,
+                    }
+                }
+                unknown => {
+                    return Err(AppError::Config(format!(
+                        "Channel '{}': unknown channel_type '{}', expected 'direct-tcpip', 'forwarded-tcpip', or 'session'",
+                        conn.name, unknown
+                    )));
+                }
             };
 
             channels.push(ChannelConfig {
@@ -373,7 +391,7 @@ impl AppConfig {
                 port: host_cfg.port,
                 username: host_cfg.username.clone(),
                 auth: host_cfg.auth.clone(),
-                channel_type: "direct-tcpip".to_string(),
+                channel_type,
                 params,
             });
         }

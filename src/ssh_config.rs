@@ -178,7 +178,7 @@ fn build_entry(
     let port = config
         .get("port")
         .and_then(|p| p.parse::<u16>().ok())
-        .or_else(|| defaults.port);
+        .or(defaults.port);
 
     let user = config
         .get("user")

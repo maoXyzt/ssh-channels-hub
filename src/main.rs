@@ -10,7 +10,7 @@ use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
 use clap::Parser;
 use cli::{Cli, Commands};
 use config::AppConfig;
-use port_check::test_port_connection;
+use port_check::{test_port_connection, test_tunnel_connection};
 use service::{ServiceManager, ServiceState};
 use ssh_config::{default_ssh_config_path, parse_ssh_config};
 use std::path::{Path, PathBuf};
@@ -410,23 +410,45 @@ async fn handle_restart(config_path: std::path::PathBuf, debug: bool) -> AnyhowR
     Ok(())
 }
 
-/// Print channel list from config (name, local -> dest_host:dest_port).
+/// Print channel list from config (name, local -> dest or remote -> local).
 fn print_channel_list(channels: &[config::ConnectionConfig]) {
     if channels.is_empty() {
         return;
     }
     println!("  Channels:");
     for c in channels {
-        let local = c
-            .ports
-            .local_port
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "?".to_string());
-        let dest = format!("{}:{}", c.dest_host, c.ports.dest_port);
-        println!(
-            "    - {} \tlisten {:>5} -> {} (host: {})",
-            c.name, local, dest, c.hostname
-        );
+        let is_remote = c
+            .channel_type
+            .as_deref()
+            .map(|t| t == "forwarded-tcpip")
+            .unwrap_or(false);
+        if is_remote {
+            // forwarded-tcpip: ports = "local:remote" -> remote bind port = dest_port, local connect = dest_host:local_port
+            let remote = c.ports.dest_port.to_string();
+            let local_dest = format!(
+                "{}:{}",
+                c.dest_host,
+                c.ports
+                    .local_port
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "?".to_string())
+            );
+            println!(
+                "    - {} \tremote {:>5} -> local {} (host: {})",
+                c.name, remote, local_dest, c.hostname
+            );
+        } else {
+            let local = c
+                .ports
+                .local_port
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            let dest = format!("{}:{}", c.dest_host, c.ports.dest_port);
+            println!(
+                "    - {} \tlisten {:>5} -> {} (host: {})",
+                c.name, local, dest, c.hostname
+            );
+        }
     }
 }
 
@@ -444,27 +466,24 @@ fn state_display(state: &ServiceState) -> &'static str {
 /// Handle status command: connect to main process via IPC to get live status.
 async fn handle_status(config_path: PathBuf) -> AnyhowResult<()> {
     // Try IPC first: connect to running main process
-    match query_status_via_ipc(&config_path).await {
-        Ok(status) => {
-            println!("Service Status:");
-            println!("  State: {}", state_display(&status.state));
-            println!(
-                "  Active Channels: {}/{}",
-                status.active_channels, status.total_channels
-            );
-            println!("  Config: {}", config_path.display());
-            if let Ok(pid) = std::fs::read_to_string(pid_file_path(&config_path)) {
-                let pid = pid.trim();
-                if !pid.is_empty() {
-                    println!("  PID: {}", pid);
-                }
+    if let Ok(status) = query_status_via_ipc(&config_path).await {
+        println!("Service Status:");
+        println!("  State: {}", state_display(&status.state));
+        println!(
+            "  Active Channels: {}/{}",
+            status.active_channels, status.total_channels
+        );
+        println!("  Config: {}", config_path.display());
+        if let Ok(pid) = std::fs::read_to_string(pid_file_path(&config_path)) {
+            let pid = pid.trim();
+            if !pid.is_empty() {
+                println!("  PID: {}", pid);
             }
-            if let Ok(config) = AppConfig::from_file(&config_path) {
-                print_channel_list(&config.channels);
-            }
-            return Ok(());
         }
-        Err(_) => {}
+        if let Ok(config) = AppConfig::from_file(&config_path) {
+            print_channel_list(&config.channels);
+        }
+        return Ok(());
     }
 
     // No running process (IPC file missing or connection refused): show Stopped with config totals
@@ -598,6 +617,20 @@ async fn handle_test(config_path: std::path::PathBuf) -> AnyhowResult<()> {
     let mut all_passed = true;
 
     for conn in &config.channels {
+        let is_remote = conn
+            .channel_type
+            .as_deref()
+            .map(|t| t == "forwarded-tcpip")
+            .unwrap_or(false);
+
+        if is_remote {
+            print!("Channel '{}' (remote forward)... ", conn.name);
+            println!(
+                "skipped (test connects to local listener; use remote port on server to verify)"
+            );
+            continue;
+        }
+
         let local_port = conn.ports.local_port.expect("local_port must be set");
         let dest_port = conn.ports.dest_port;
         let dest_host = &conn.dest_host;
@@ -607,18 +640,33 @@ async fn handle_test(config_path: std::path::PathBuf) -> AnyhowResult<()> {
             conn.name, local_port, dest_host, dest_port
         );
 
-        // Test connection to local port
+        // First check if port is listening
         match test_port_connection("127.0.0.1", local_port).await {
-            Ok(true) => {
-                println!("✓ Connected");
-            }
             Ok(false) => {
-                println!("✗ Failed to connect");
+                println!("✗ Port not listening");
                 all_passed = false;
+                continue;
             }
             Err(e) => {
-                println!("✗ Error: {}", e);
+                println!("✗ Error checking port: {}", e);
                 all_passed = false;
+                continue;
+            }
+            Ok(true) => {
+                // Port is listening, now test if tunnel is actually working
+                match test_tunnel_connection("127.0.0.1", local_port).await {
+                    Ok(true) => {
+                        println!("✓ Tunnel working");
+                    }
+                    Ok(false) => {
+                        println!("✗ Tunnel dead (SSH connection may be broken)");
+                        all_passed = false;
+                    }
+                    Err(e) => {
+                        println!("✗ Error testing tunnel: {}", e);
+                        all_passed = false;
+                    }
+                }
             }
         }
     }

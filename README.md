@@ -128,8 +128,10 @@ The generated file contains `[[hosts]]` entries. Add `[[channels]]` sections (ho
 ### Configuration format (summary)
 
 - **Hosts** (`[[hosts]]`): `name`, `host`, `port`, `username`, `auth` (key or password).
-- **Channels** (`[[channels]]`): `name`, `hostname` (must match a host), `ports` in form `"local:dest"` (e.g. `"80:3923"` = listen on local port 80, forward to remote port 3923).
-- **Optional per channel**: `dest_host` (default `127.0.0.1`), `listen_host` (default `127.0.0.1`; use `0.0.0.0` to accept connections from any interface).
+- **Channels** (`[[channels]]`): `name`, `hostname` (must match a host), `ports`. Optional: `channel_type`, `dest_host`, `listen_host`.
+  - **Local forward** (default, like `ssh -L`): `ports = "local:dest"` (e.g. `"80:3923"` = listen local 80 → remote 3923).
+  - **Remote forward** (like `ssh -R`): `channel_type = "forwarded-tcpip"`, `ports = "remote:local"` (e.g. `"8022:80"` = bind 8022 on server → connect to local 127.0.0.1:80).
+- **Optional per channel**: `dest_host` (default `127.0.0.1`), `listen_host` (default `127.0.0.1`; use `0.0.0.0` for all interfaces; local forward only).
 
 ### Configuration examples
 
@@ -165,12 +167,26 @@ dest_host = "127.0.0.1"
 listen_host = "0.0.0.0"
 ```
 
+#### Remote port forwarding (ssh -R style)
+
+Expose a local service on the SSH server: bind a port on the server and bridge connections to a local address.
+
+```toml
+[[channels]]
+name = "expose-local-web"
+channel_type = "forwarded-tcpip"
+hostname = "web-server"
+ports = "8022:80"           # remote port 8022 -> local 127.0.0.1:80
+dest_host = "127.0.0.1"    # local host to connect to (default)
+```
+
 ### Common use cases
 
 1. **Secure DB access**: Forward local 3306 to remote MySQL (e.g. `ports = "3306:3306"`).
 2. **Remote web service**: Forward local 8080 to remote 80 (e.g. `ports = "8080:80"`).
-3. **Multiple tunnels**: Define several channels; all start together and reconnect independently.
-4. **Expose to LAN**: Set `listen_host = "0.0.0.0"` so other machines can use the tunnel (consider firewall and security).
+3. **Remote forward (ssh -R)**: Expose local service on server (e.g. `channel_type = "forwarded-tcpip"`, `ports = "8022:80"`).
+4. **Multiple tunnels**: Define several channels; all start together and reconnect independently.
+5. **Expose to LAN**: Set `listen_host = "0.0.0.0"` so other machines can use the tunnel (consider firewall and security).
 
 ### Troubleshooting
 
