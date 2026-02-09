@@ -10,7 +10,7 @@ use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
 use clap::Parser;
 use cli::{Cli, Commands};
 use config::AppConfig;
-use port_check::test_port_connection;
+use port_check::{test_port_connection, test_tunnel_connection};
 use service::{ServiceManager, ServiceState};
 use ssh_config::{default_ssh_config_path, parse_ssh_config};
 use std::path::{Path, PathBuf};
@@ -640,18 +640,33 @@ async fn handle_test(config_path: std::path::PathBuf) -> AnyhowResult<()> {
             conn.name, local_port, dest_host, dest_port
         );
 
-        // Test connection to local port
+        // First check if port is listening
         match test_port_connection("127.0.0.1", local_port).await {
-            Ok(true) => {
-                println!("✓ Connected");
-            }
             Ok(false) => {
-                println!("✗ Failed to connect");
+                println!("✗ Port not listening");
                 all_passed = false;
+                continue;
             }
             Err(e) => {
-                println!("✗ Error: {}", e);
+                println!("✗ Error checking port: {}", e);
                 all_passed = false;
+                continue;
+            }
+            Ok(true) => {
+                // Port is listening, now test if tunnel is actually working
+                match test_tunnel_connection("127.0.0.1", local_port).await {
+                    Ok(true) => {
+                        println!("✓ Tunnel working");
+                    }
+                    Ok(false) => {
+                        println!("✗ Tunnel dead (SSH connection may be broken)");
+                        all_passed = false;
+                    }
+                    Err(e) => {
+                        println!("✗ Error testing tunnel: {}", e);
+                        all_passed = false;
+                    }
+                }
             }
         }
     }

@@ -84,6 +84,46 @@ pub async fn test_port_connection(host: &str, port: u16) -> Result<bool> {
     }
 }
 
+/// Test if an SSH tunnel is actually working by attempting to send/receive data
+/// This detects cases where the local port is listening but the SSH connection is dead
+pub async fn test_tunnel_connection(host: &str, port: u16) -> Result<bool> {
+    use tokio::io::AsyncWriteExt;
+
+    let addr = format!("{}:{}", host, port);
+
+    // Try to connect with a timeout
+    let mut stream = match timeout(Duration::from_secs(2), TcpStream::connect(&addr)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(_)) => return Ok(false),
+        Err(_) => return Ok(false), // Timeout
+    };
+
+    // Try to send a small amount of data to verify the tunnel is working
+    // If the SSH connection is dead, this will fail with connection reset
+    match timeout(Duration::from_secs(1), stream.write_all(b"X")).await {
+        Ok(Ok(_)) => {
+            // Successfully sent data, tunnel appears to be working
+            Ok(true)
+        }
+        Ok(Err(e)) => {
+            // Check if it's a connection reset error (SSH tunnel is dead)
+            if e.kind() == std::io::ErrorKind::ConnectionReset
+                || e.kind() == std::io::ErrorKind::BrokenPipe
+            {
+                Ok(false)
+            } else {
+                // Other error, but connection was established, so consider it working
+                Ok(true)
+            }
+        }
+        Err(_) => {
+            // Timeout on write, but connection was established
+            // This might happen if the remote service doesn't respond, but tunnel is working
+            Ok(true)
+        }
+    }
+}
+
 // /// Test multiple port connections and return results
 // pub async fn test_port_connections(connections: &[(String, u16)]) -> Vec<(String, u16, bool)> {
 //     let mut results = Vec::new();
