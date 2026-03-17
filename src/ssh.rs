@@ -433,6 +433,19 @@ async fn run_direct_tcpip_listener(
                 info!(channel = %config.name, "Listener cancelled");
                 return Ok(());
             }
+            result = &mut *session => {
+                let reason = result.map_err(|e| e.to_string())
+                    .err()
+                    .unwrap_or_else(|| "connection closed".to_string());
+                warn!(
+                    channel = %config.name,
+                    reason = %reason,
+                    "SSH session ended, triggering reconnection"
+                );
+                return Err(AppError::SshConnection(
+                    format!("SSH session ended: {}", reason)
+                ));
+            }
             accept_result = listener.accept() => {
                 let (mut stream, peer_addr) = match accept_result {
                     Ok(x) => x,
@@ -466,12 +479,23 @@ async fn run_direct_tcpip_listener(
                             }
                         });
                     }
+                    Err(e @ Error::ChannelOpenFailure(_)) => {
+                        error!(
+                            channel = %channel_name,
+                            peer = %peer_addr,
+                            error = ?e,
+                            "Channel open refused by server (connection alive)"
+                        );
+                    }
                     Err(e) => {
                         error!(
                             channel = %channel_name,
                             error = ?e,
-                            "Failed to open direct-tcpip channel for new connection"
+                            "SSH session dead detected via channel_open, triggering reconnection"
                         );
+                        return Err(AppError::SshConnection(
+                            format!("SSH session dead: {}", e)
+                        ));
                     }
                 }
             }
