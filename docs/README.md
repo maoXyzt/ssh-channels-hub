@@ -112,7 +112,7 @@ SSH Channels Hub 是一个用于管理和维护多个 SSH channels 的 CLI 应�
 
 - [项目 README](../README.md)
 - [AGENTS.md](../AGENTS.md) - 开发指南
-- [配置示例](../configs/config.example.toml)
+- [配置示例](../configs.example.toml)
 
 ## 贡献指南
 

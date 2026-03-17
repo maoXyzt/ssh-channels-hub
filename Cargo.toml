@@ -2,6 +2,12 @@
 name = "ssh-channels-hub"
 version = "0.2.0"
 edition = "2021"
+description = "A CLI tool for managing SSH port forwarding tunnels with auto-reconnect"
+license = "MIT"
+repository = "https://github.com/maoXyzt/ssh-channels-hub"
+readme = "README.md"
+keywords = ["ssh", "tunnel", "port-forwarding", "proxy"]
+categories = ["network-programming", "command-line-utilities"]
 
 [dependencies]
 russh = "0.45"
