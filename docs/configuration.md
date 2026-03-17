@@ -462,7 +462,7 @@ ssh-channels-hub validate --config /path/to/config.toml
 
 ### 6.1 版本兼容性
 
-当前版本: `0.1.0`
+当前版本: `0.2.0`
 
 配置文件格式在主要版本之间可能不兼容。升级时请：
 
