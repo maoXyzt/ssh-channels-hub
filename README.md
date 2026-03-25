@@ -16,6 +16,20 @@ Cross-platform (Windows, Linux), written in Rust.
 
 ### Installation
 
+Install from crates.io (recommended):
+
+```bash
+cargo install ssh-channels-hub --version 0.2.0
+```
+
+Or install the latest version:
+
+```bash
+cargo install ssh-channels-hub
+```
+
+Crates.io: https://crates.io/crates/ssh-channels-hub
+
 Build from source:
 
 ```bash
