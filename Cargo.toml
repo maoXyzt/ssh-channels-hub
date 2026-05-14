@@ -1,13 +1,24 @@
 [package]
 name = "ssh-channels-hub"
 version = "0.2.0"
-edition = "2021"
+edition = "2024"
+rust-version = "1.91"
 description = "A CLI tool for managing SSH port forwarding tunnels with auto-reconnect"
 license = "MIT"
 repository = "https://github.com/maoXyzt/ssh-channels-hub"
+homepage = "https://github.com/maoXyzt/ssh-channels-hub"
+documentation = "https://docs.rs/ssh-channels-hub"
 readme = "README.md"
 keywords = ["ssh", "tunnel", "port-forwarding", "proxy"]
 categories = ["network-programming", "command-line-utilities"]
+include = [
+  "/src/**/*",
+  "/Cargo.toml",
+  "/Cargo.lock",
+  "/README.md",
+  "/LICENSE",
+  "/configs.example.toml",
+]
 
 [dependencies]
 russh = "0.45"
@@ -24,3 +35,12 @@ serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 async-trait = "0.1"
 dirs = "5.0"
+
+# Drives `cargo release <patch|minor|major|x.y.z> --execute`: bumps the
+# version in Cargo.toml + Cargo.lock, commits, tags `v<version>`, and pushes.
+# CI takes over after the tag lands and runs `cargo publish`, so the local
+# command must NOT publish.
+[package.metadata.release]
+publish = false
+pre-release-commit-message = "release: {{version}}"
+tag-message = "release {{version}}"

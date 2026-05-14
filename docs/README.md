@@ -35,6 +35,12 @@
    - 重连流程
    - 关闭和错误处理流程
 
+6. **[发版手册](./how_to_release.md)** - 仓库管理员发版指南
+   - `cargo release` + CI 双段流程
+   - conventional commits 与 changelog 生成规则
+   - 防呆机制与故障排查
+   - 撤回已发版本(`cargo yank`)
+
 ## 快速开始
 
 ### 阅读顺序建议
