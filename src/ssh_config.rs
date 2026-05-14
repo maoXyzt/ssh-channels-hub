@@ -96,7 +96,12 @@ fn parse_ssh_config_content(content: &str) -> Result<Vec<SshConfigEntry>> {
                entries: &mut Vec<SshConfigEntry>| {
     if !aliases.is_empty() {
       if *is_default {
-        *defaults = extract_defaults(cfg);
+        // Multiple `Host *` blocks are merged, first occurrence wins (per ssh_config(5)).
+        // `take().or(...)` so existing String / PathBuf values are moved, not cloned.
+        let new = extract_defaults(cfg);
+        defaults.port = defaults.port.or(new.port);
+        defaults.user = defaults.user.take().or(new.user);
+        defaults.identity_file = defaults.identity_file.take().or(new.identity_file);
       } else {
         for alias in aliases.iter() {
           if let Some(entry) = build_entry(alias, cfg, defaults) {
@@ -162,15 +167,15 @@ fn strip_keyword<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
   if !head.eq_ignore_ascii_case(keyword) {
     return None;
   }
-  let after = rest.trim_start();
-  // The separator must be `=` or whitespace (already trimmed) — reject `HostName`
-  // when we're looking for `host`, but accept `host=foo` and `host  foo`.
+  // The separator must be `=` (with any surrounding whitespace) or whitespace —
+  // reject `HostName` when we're looking for `host`, but accept `host=foo`,
+  // `host = foo`, and `host  foo`.
   if rest.is_empty() {
     None
-  } else if rest.starts_with('=') {
-    Some(after.trim_start_matches('=').trim_start())
+  } else if let Some(after_eq) = rest.trim_start().strip_prefix('=') {
+    Some(after_eq.trim_start())
   } else if rest.starts_with(char::is_whitespace) {
-    Some(after)
+    Some(rest.trim_start())
   } else {
     None
   }
@@ -229,33 +234,29 @@ fn extract_defaults(config: &HashMap<String, String>) -> SshConfigDefaults {
 }
 
 /// Parse a directive line such as `HostName example.com`, `Port=2222`, or
-/// `IdentityFile "/path/with space"`. Returns the keyword and the
-/// (possibly de-quoted) value.
+/// `IdentityFile "/path/with space"`. Returns the keyword and the de-quoted
+/// value (multi-arg directives are joined with single spaces).
 fn parse_directive(line: &str) -> Option<(&str, String)> {
   // Keyword runs until the first whitespace or `=`.
   let key_end = line
     .find(|c: char| c.is_whitespace() || c == '=')
     .filter(|&i| i > 0)?;
   let (key, rest) = line.split_at(key_end);
-  let rest = rest.trim_start();
-  // Allow either `=` or whitespace as the separator.
-  let value_part = rest.strip_prefix('=').map(str::trim_start).unwrap_or(rest);
+  // Allow `=` (with surrounding whitespace) or whitespace as the separator.
+  let value_part = match rest.trim_start().strip_prefix('=') {
+    Some(after_eq) => after_eq.trim_start(),
+    None => rest.trim_start(),
+  };
   if value_part.is_empty() {
     return None;
   }
 
-  let mut chars = value_part.chars().peekable();
-  let token = read_token(&mut chars);
-  // If trailing content remains (e.g. `IdentityFile "a b" extra`), join the
-  // raw tail back on so we don't silently drop arguments.
-  let tail: String = chars.collect();
-  let tail = tail.trim_start();
-  let value = if tail.is_empty() {
-    token
-  } else {
-    format!("{} {}", token, tail)
-  };
-  Some((key, value))
+  // De-quote every argument uniformly, then rejoin with single spaces.
+  let tokens = tokenize_value_list(value_part);
+  if tokens.is_empty() {
+    return None;
+  }
+  Some((key, tokens.join(" ")))
 }
 
 /// Build SshConfigEntry from host name and config map, applying defaults
@@ -476,6 +477,91 @@ Host dup
     assert_eq!(entries[0].hostname, Some("first.example.com".to_string()));
     assert_eq!(entries[0].port, Some(2200));
     assert_eq!(entries[0].user, Some("firstuser".to_string()));
+  }
+
+  #[test]
+  fn multiple_wildcard_host_blocks_merge_with_first_wins() {
+    // Two `Host *` blocks should compose, not clobber each other.
+    let content = r#"
+Host *
+    Port 2222
+
+Host *
+    User defaultuser
+    IdentityFile ~/.ssh/default_key
+
+Host myserver
+    HostName example.com
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    let e = &entries[0];
+    assert_eq!(e.host, "myserver");
+    assert_eq!(e.port, Some(2222), "Port from first Host *");
+    assert_eq!(
+      e.user,
+      Some("defaultuser".to_string()),
+      "User from second Host *"
+    );
+    assert!(e.identity_file.is_some(), "IdentityFile from second Host *");
+  }
+
+  #[test]
+  fn first_wildcard_host_value_wins_when_repeated() {
+    let content = r#"
+Host *
+    Port 2222
+
+Host *
+    Port 9999
+
+Host myserver
+    HostName example.com
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].port, Some(2222), "first Host * value should win");
+  }
+
+  #[test]
+  fn equals_separator_tolerates_surrounding_whitespace() {
+    let content = r#"
+Host = padded-eq
+    HostName  =  example.com
+    Port    =    2222
+    User=u
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    let e = &entries[0];
+    assert_eq!(e.host, "padded-eq");
+    assert_eq!(e.hostname, Some("example.com".to_string()));
+    assert_eq!(e.port, Some(2222));
+    assert_eq!(e.user, Some("u".to_string()));
+  }
+
+  #[test]
+  fn directive_with_multiple_quoted_args_dequotes_all() {
+    // Regression for inconsistent quoting in parse_directive: when a directive
+    // has several quoted args, every one of them should be de-quoted (not just
+    // the first), and the result should be space-joined.
+    let content = r#"
+Host multiarg
+    HostName example.com
+    User u
+    SendEnv "VAR1" "VAR2"
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    // Round-trip through parse_directive directly (SendEnv isn't surfaced in
+    // SshConfigEntry, but its parse path is shared with the ones that are).
+    let (key, value) = parse_directive(r#"SendEnv "VAR1" "VAR2""#).unwrap();
+    assert_eq!(key, "SendEnv");
+    assert_eq!(value, "VAR1 VAR2", "all args should be de-quoted");
+
+    let (key, value) = parse_directive(r#"IdentityFile "/path with space""#).unwrap();
+    assert_eq!(key, "IdentityFile");
+    assert_eq!(value, "/path with space");
   }
 
   #[test]
