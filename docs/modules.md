@@ -67,42 +67,51 @@ pub enum Commands {
 
 ### 2.3 config.rs
 
-**职责**: 配置文件的加载、解析和验证
+**职责**: 加载 `configs.toml`、解析、并联合 `~/.ssh/config` 构造运行时 ChannelConfig。
+
+host info(HostName / User / Port / IdentityFile)由 `ssh_config.rs` 从 `~/.ssh/config` 读出,`config.rs` 只负责 channels、auth 覆盖、重连策略。
 
 **核心数据结构**:
 
 ```rust
 pub struct AppConfig {
-    pub hosts: Vec<HostConfig>,
+    pub ssh_config: Option<PathBuf>,           // 覆盖 ~/.ssh/config 路径(可选)
     pub channels: Vec<ConnectionConfig>,
+    pub auth: HashMap<String, AuthOverride>,   // 键为 SSH config 的 Host alias
     pub reconnection: ReconnectionConfig,
-}
-
-pub struct HostConfig {
-    pub name: String,
-    pub host: String,
-    pub port: u16,                // SSH 端口，默认值为 22
-    pub username: String,
-    pub auth: AuthConfig,
 }
 
 pub struct ConnectionConfig {
     pub name: String,
-    pub hostname: String,
-    pub ports: PortForward,       // 配置格式 "local:dest"，解析后含 local_port、dest_port
-    pub dest_host: String,
-    pub listen_host: String,
+    pub hostname: String,                      // SSH config 里的 Host alias
+    pub direction: Direction,                  // "local->remote" 或 "remote->local"
+    pub local: Endpoint,                       // 本机这一侧的 host:port
+    pub remote: Endpoint,                      // 远端这一侧的 host:port
 }
 
-// Runtime channel configuration (built from hosts + channels)
+pub enum Direction {
+    LocalToRemote,                             // ssh -L: 本机监听,流量出
+    RemoteToLocal,                             // ssh -R: 服务器绑定,流量入
+}
+
+pub struct Endpoint {
+    pub host: String,                          // 默认 "127.0.0.1"
+    pub port: u16,
+}
+
+pub struct AuthOverride {
+    pub password: Option<String>,              // SSH config 存不了的密码
+    pub passphrase: Option<String>,            // IdentityFile 的 passphrase
+}
+
+// Runtime channel configuration (built from configs.toml + ~/.ssh/config)
 pub struct ChannelConfig {
     pub name: String,
-    pub host: String,
-    pub port: u16,                // SSH 端口，默认值为 22
-    pub username: String,
+    pub host: String,                          // resolved from SSH HostName
+    pub port: u16,                             // resolved from SSH Port, default 22
+    pub username: String,                      // resolved from SSH User
     pub auth: AuthConfig,
-    pub channel_type: String,
-    pub params: ChannelParams,
+    pub params: ChannelTypeParams,             // DirectTcpIp / ForwardedTcpIp / Session
 }
 
 pub enum AuthConfig {
@@ -113,18 +122,22 @@ pub enum AuthConfig {
 
 **主要功能**:
 
-- `AppConfig::from_file()`: 从文件加载配置
-- `AppConfig::default_path()`: 获取默认配置路径
-- `AppConfig::build_channels()`: 将 hosts 和 channels 组合成运行时 ChannelConfig
-- `AppConfig::from_ssh_config_entries()`: 从 SSH config 生成配置
-- 使用 `serde` 进行 TOML 反序列化
-- 提供默认值支持
+- `AppConfig::from_file()`: 加载并反序列化
+- `AppConfig::default_path()`: 获取默认 configs.toml 路径
+- `AppConfig::ssh_config_path()`: 计算 SSH config 实际路径(`ssh_config` 字段优先,否则 `~/.ssh/config`)
+- `AppConfig::build_channels()`: 解析 SSH config、按 alias 查表、套用 auth 覆盖,构造 `Vec<ChannelConfig>`
+- `AppConfig::generate_scaffold()`: 从 SSH config 条目渲染一份注释掉的 `configs.toml` 文本,供 `generate` 子命令使用
+
+**auth 解析规则(`resolve_auth`)**:
+
+1. `[auth.<alias>].password` 存在 → 走密码登录,**覆盖** SSH config 的 IdentityFile
+2. 否则 SSH config 的 `IdentityFile` 存在 → 走密钥登录,`[auth.<alias>].passphrase` 附加到密钥上
+3. 否则报错,提示「填一个 password 或者补 IdentityFile」
 
 **设计考虑**:
 
-- 使用枚举类型确保类型安全
-- 支持可选字段和默认值
-- 清晰的错误信息
+- 单一信息源:host info 完全来自 SSH config,避免与 `~/.ssh/config` 重复维护
+- 配置失败提前暴露:`build_channels` 在 service 启动前调用,任何不一致一次性报出
 
 ### 2.4 error.rs
 

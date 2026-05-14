@@ -1,509 +1,293 @@
 # 使用教程
 
-本文档提供 SSH Channels Hub 的常见使用场景和详细教程。
+本文档提供 SSH Channels Hub 的常见使用场景和详细教程。host 信息从 `~/.ssh/config` 读取,`configs.toml` 只声明要建立的 channels 以及可选的密码 / passphrase 覆盖。
 
 ## 目录
 
-1. [端口转发（SSH 隧道）](#端口转发ssh-隧道)
-2. [远程端口转发（ssh -R 风格）](#远程端口转发ssh--r-风格)
-3. [监控远程日志](#监控远程日志)
-4. [执行远程命令](#执行远程命令)
-5. [多 channels 管理](#多-channels-管理)
+1. [端口转发(本地)](#1-端口转发本地---类-ssh--l)
+2. [远程端口转发](#2-远程端口转发类-ssh--r)
+3. [常见场景](#3-常见场景)
+4. [多 channels 管理](#4-多-channels-管理)
+5. [故障排查](#5-故障排查)
 
 ---
 
-## 端口转发（SSH 隧道）
+## 1. 端口转发(本地) - 类 `ssh -L`
 
-### 场景说明
+把本地端口的流量经 SSH 隧道转发到远程目标。例如:本地 `18080` → 远程 `127.0.0.1:8080`。
 
-当你需要在本地访问远程服务器上的服务时，可以使用 SSH 端口转发功能。例如：
+### 1.1 配置 `~/.ssh/config`
 
-- 远程服务器上有一个监听在 `8080` 端口的 Web 服务
-- 你希望通过本地 `18080` 端口访问这个服务
-- 流量将通过 SSH 隧道安全地转发
-
-### 配置步骤
-
-#### 1. 定义 hosts
-
-首先在配置文件中定义一个 host：
-
-```toml
-[[hosts]]
-name = "remote-server"
-host = "your-remote-server.com"  # 远程服务器地址
-port = 22                         # SSH 端口（可选，默认为 22）
-username = "your-username"        # SSH 用户名
-
-[hosts.auth]
-type = "key"                      # 认证方式：key 或 password
-key_path = "~/.ssh/id_rsa"        # SSH 私钥路径
-# 如果密钥有密码保护，可以添加：
-# passphrase = "your-key-passphrase"
+```
+Host remote-server
+  HostName your-remote-server.com
+  Port 22                   # 可选,默认 22
+  User your-username
+  IdentityFile ~/.ssh/id_rsa
 ```
 
-**使用密码认证的示例**：
+如果该 host 没有 `IdentityFile`(密码登录),或者 `IdentityFile` 受 passphrase 保护,见 [§1.4 密码与 passphrase](#14-密码与-passphrase)。
 
-```toml
-[[hosts]]
-name = "remote-server"
-host = "your-remote-server.com"
-port = 22                         # SSH 端口（可选，默认为 22）
-username = "your-username"
-
-[hosts.auth]
-type = "password"
-password = "your-password"
-```
-
-#### 2. 定义 channels
-
-然后定义一个 channel 来实现端口转发：
+### 1.2 配置 `configs.toml`
 
 ```toml
 [[channels]]
-name = "web-service-tunnel"       # channel 名称（唯一标识）
-hostname = "remote-server"         # 引用上面定义的 host name
-ports = "18080:8080"               # 格式 "本地端口:远程端口"
-# dest_host = "127.0.0.1"         # 可选，默认为 "127.0.0.1"
+name      = "web-service-tunnel"
+hostname  = "remote-server"     # ← 对应 ~/.ssh/config 里的 `Host remote-server`
+direction = "local->remote"
+local     = "18080"
+remote    = "8080"
 ```
 
-### 完整配置示例
+完整最小配置:
 
 ```toml
-# 重连配置（全局）
+[[channels]]
+name      = "web-service-tunnel"
+hostname  = "remote-server"
+direction = "local->remote"
+local     = "18080"
+remote    = "8080"
+
 [reconnection]
 max_retries = 0
 initial_delay_secs = 1
 max_delay_secs = 30
 use_exponential_backoff = true
-
-# hosts 定义
-[[hosts]]
-name = "remote-server"
-host = "example.com"
-port = 22                         # SSH 端口（可选，默认为 22）
-username = "user"
-
-[hosts.auth]
-type = "key"
-key_path = "~/.ssh/id_rsa"
-
-# channels 定义
-[[channels]]
-name = "web-service-tunnel"
-hostname = "remote-server"
-ports = "18080:8080"
-# dest_host = "127.0.0.1"  # 可选，默认为 "127.0.0.1"
 ```
 
-### 使用方法
+`configs.toml` 默认查找顺序:`./configs.toml` → `~/.config/ssh-channels-hub/config.toml` → `%APPDATA%\ssh-channels-hub\config.toml`(Windows)。也可用 `--config` 显式指定。
 
-1. **保存配置文件**
-
-   将上述配置保存到默认配置文件位置（按顺序查找，使用匹配的第一个）：
-   - **当前目录**: `./configs.toml`
-   - **Linux/macOS**: `~/.config/ssh-channels-hub/config.toml`
-   - **Windows**: `%APPDATA%\ssh-channels-hub\config.toml`
-
-   或使用自定义路径，通过 `--config` 参数指定。
-
-2. **验证配置**
-
-   ```bash
-   ssh-channels-hub validate
-   ```
-
-   或验证指定配置文件：
-
-   ```bash
-   ssh-channels-hub validate --config /path/to/config.toml
-   ```
-
-3. **启动服务**
-
-   前台运行（默认，按 Ctrl+C 停止）：
-
-   ```bash
-   ssh-channels-hub start
-   ```
-
-   后台运行（daemon 模式）：
-
-   ```bash
-   ssh-channels-hub start -D
-   # 或
-   ssh-channels-hub start --daemon
-   ```
-
-   启用调试日志：
-
-   ```bash
-   ssh-channels-hub start --debug
-   ```
-
-4. **访问服务**
-
-   启动成功后，在浏览器或客户端中访问：
-
-   ```text
-   http://localhost:18080
-   ```
-
-   流量将通过 SSH 隧道转发到远程服务器的 `127.0.0.1:8080`。
-
----
-
-## 远程端口转发（ssh -R 风格）
-
-### 场景说明
-
-当你想把**本机**上的服务暴露到**远程 SSH 服务器**的端口时，使用远程端口转发（等价于 `ssh -R`）。例如：
-
-- 本机有一个监听在 `80` 端口的 Web 服务
-- 你希望远程服务器上的 `8022` 端口接受连接后，经 SSH 隧道转发到本机 `127.0.0.1:80`
-- 这样从外网访问「服务器:8022」即可访问你本机的 Web 服务
-
-### 配置步骤
-
-在 channel 中设置 `channel_type = "forwarded-tcpip"`，`ports` 格式为 **"远程端口:本地端口"**：
-
-```toml
-[[channels]]
-name = "expose-local-web"
-channel_type = "forwarded-tcpip"
-hostname = "remote-server"   # 引用上面定义的 host
-ports = "8022:80"             # 远程服务器绑定 8022，转发到本机 127.0.0.1:80
-# dest_host = "127.0.0.1"     # 可选，本机要连接到的地址，默认为 127.0.0.1
-```
-
-### 使用方法
-
-1. 启动服务后，SSH 会向服务器发送 `tcpip-forward` 请求，在服务器上绑定指定端口（如 8022）。
-2. 当有人连接「服务器:8022」时，服务器通过 SSH 打开 `forwarded-tcpip` 通道，本程序连接本机 `dest_host:local_port` 并双向转发数据。
-3. 在服务器上可用 `curl http://127.0.0.1:8022` 或从外网访问「服务器公网 IP:8022」来访问本机服务（需服务器防火墙放行）。
-
-**注意**：`ssh test` 命令只测试本地监听端口，不会测试远程转发 channel；远程转发需在服务器侧用实际连接验证。
-
----
-
-（上文「端口转发」一节中的后续步骤：）
-
-1. **检查状态**
-
-   ```bash
-   ssh-channels-hub status
-   ```
-
-2. **停止服务**
-
-   通过 IPC 向运行中的服务发送停止信号，服务会主动退出并清理；然后删除 run 文件（`.pid`、`.port`）。若使用非默认配置，需加 `--config`：
-
-   ```bash
-   ssh-channels-hub stop
-   ssh-channels-hub stop --config /path/to/config.toml
-   ```
-
-### 工作原理
-
-端口转发的工作原理：
-
-```text
-本地应用 → localhost:18080 → SSH 隧道 → 远程服务器:127.0.0.1:8080
-```
-
-- **ports** (`"本地端口:远程端口"`): 本地监听端口与远程目标端口，均为必填，例如 `"18080:8080"`
-- **目标地址** (`dest_host`): 远程服务器上的目标地址，默认为 `127.0.0.1`（可选）
-
-### 注意事项
-
-1. **服务监听地址**
-
-   确保远程服务器上的服务监听在正确的地址：
-   - 如果服务监听在 `127.0.0.1:8080`，`dest_host` 使用 `"127.0.0.1"`
-   - 如果服务监听在 `0.0.0.0:8080`，`dest_host` 仍使用 `"127.0.0.1"` 即可
-
-2. **端口占用**
-
-   **自动检查**: 服务启动前会自动检查所有配置的本地端口是否被占用。如果检测到端口已被占用，服务将不会启动，并显示明确的错误信息，例如：
-
-   ```text
-   Error: Port(s) already in use: 18080, 3306. Please stop the application using these ports or change the configuration.
-   ```
-
-   如果遇到端口占用错误，可以：
-   - 更换为其他端口（如 `18081`、`18082` 等）
-   - 或停止占用该端口的程序
-   - 手动检查端口占用情况：
-
-   ```bash
-   # Linux/macOS
-   lsof -i :18080
-   # 或
-   netstat -an | grep 18080
-
-   # Windows
-   netstat -ano | findstr :18080
-   ```
-
-3. **SSH 权限**
-
-   确保 SSH 用户有权限访问远程服务器，并且能够建立 SSH 连接。
-
-4. **防火墙**
-
-   确保本地防火墙允许监听配置中的本地端口（`ports` 中的本地端口）。
-
-### 常见使用场景
-
-#### 场景 1: 访问远程数据库
-
-```toml
-[[hosts]]
-name = "db-server"
-host = "db.example.com"
-username = "admin"
-
-[hosts.auth]
-type = "key"
-key_path = "~/.ssh/id_rsa"
-
-[[channels]]
-name = "mysql-tunnel"
-hostname = "db-server"
-ports = "3306:3306"
-dest_host = "127.0.0.1"
-```
-
-然后可以使用 MySQL 客户端连接 `localhost:3306`。
-
-#### 场景 2: 访问远程 Web 服务
-
-```toml
-[[hosts]]
-name = "web-server"
-host = "web.example.com"
-username = "deploy"
-
-[hosts.auth]
-type = "key"
-key_path = "~/.ssh/deploy_key"
-
-[[channels]]
-name = "web-tunnel"
-hostname = "web-server"
-ports = "8080:80"
-dest_host = "127.0.0.1"
-```
-
-访问 `http://localhost:8080` 即可访问远程服务器的 Web 服务。
-
-#### 场景 3: 访问远程 Redis
-
-```toml
-[[hosts]]
-name = "redis-server"
-host = "redis.example.com"
-username = "redis-user"
-
-[hosts.auth]
-type = "password"
-password = "your-password"
-
-[[channels]]
-name = "redis-tunnel"
-hostname = "redis-server"
-ports = "6379:6379"
-dest_host = "127.0.0.1"
-```
-
----
-
-## 监控远程日志
-
-### 日志监控场景
-
-需要实时监控远程服务器上的日志文件，例如应用日志、系统日志等。
-
-### 日志监控配置
-
-```toml
-[[hosts]]
-name = "app-server"
-host = "app.example.com"
-username = "admin"
-
-[hosts.auth]
-type = "key"
-key_path = "~/.ssh/id_rsa"
-
-[[channels]]
-name = "app-logs"
-hostname = "app-server"
-ports = "9999:22"   # 占位示例；当前仅支持端口转发
-dest_host = "127.0.0.1"
-```
-
-**注意**: 对于日志监控，实际上应该使用 `session` 类型的 channel，而不是 `direct-tcpip`。当前配置系统主要支持端口转发场景。日志监控功能可能需要使用其他工具或等待后续功能支持。
-
----
-
-## 执行远程命令
-
-### 命令执行场景
-
-需要在远程服务器上执行命令并查看输出。
-
-**注意**: 当前版本的配置系统主要支持端口转发场景。执行远程命令的功能可能需要使用其他工具或等待后续功能支持。
-
----
-
-## 多 channels 管理
-
-### 多 channels 场景
-
-同时管理多个 SSH 连接和端口转发。
-
-### 多 channels 配置
-
-```toml
-[reconnection]
-max_retries = 0
-initial_delay_secs = 1
-max_delay_secs = 30
-use_exponential_backoff = true
-
-# 定义多个 hosts
-[[hosts]]
-name = "server1"
-host = "server1.example.com"
-username = "user1"
-
-[hosts.auth]
-type = "key"
-key_path = "~/.ssh/id_rsa"
-
-[[hosts]]
-name = "server2"
-host = "server2.example.com"
-username = "user2"
-
-[hosts.auth]
-type = "password"
-password = "password2"
-
-# 定义多个 channels
-[[channels]]
-name = "db-tunnel"
-hostname = "server1"
-ports = "3306:3306"
-dest_host = "127.0.0.1"
-
-[[channels]]
-name = "web-tunnel"
-hostname = "server2"
-ports = "8080:80"
-dest_host = "127.0.0.1"
-
-[[channels]]
-name = "redis-tunnel"
-hostname = "server1"
-ports = "6379:6379"
-dest_host = "127.0.0.1"
-```
-
-### 使用说明
-
-1. 所有 channels 会在服务启动时同时建立
-2. 每个 channel 独立管理，互不影响
-3. 如果某个 channel 断开，会自动重连（根据重连配置）
-4. 使用 `status` 命令可以查看所有 channels 的状态
-
----
-
-## 故障排查
-
-### 连接失败
-
-1. **检查 SSH 连接**
-
-   ```bash
-   ssh username@hostname -p port
-   ```
-
-   确保能够手动建立 SSH 连接。
-
-2. **检查认证信息**
-
-   - 密钥路径是否正确
-   - 密钥权限是否正确（应该是 600）
-   - 密码是否正确
-
-3. **检查网络连接**
-
-   确保能够访问远程服务器的 SSH 端口。
-
-### 端口转发不工作
-
-1. **检查本地端口**
-
-   服务启动时会自动检查端口占用。如果启动失败并提示端口被占用，请检查：
-
-   ```bash
-   # Linux/macOS
-   lsof -i :18080
-
-   # Windows
-   netstat -ano | findstr :18080
-   ```
-
-   如果端口被占用，请停止占用该端口的程序或更换配置中的端口号。
-
-2. **检查远程服务**
-
-   在远程服务器上检查服务是否正常运行：
-
-   ```bash
-   # 在远程服务器上执行
-   curl http://127.0.0.1:8080
-   ```
-
-3. **检查日志**
-
-   使用 `--debug` 参数启动服务，查看详细日志：
-
-   ```bash
-   ssh-channels-hub start --debug
-   ```
-
-### 配置错误
-
-使用 `validate` 命令检查配置：
+### 1.3 启动
 
 ```bash
-ssh-channels-hub validate
+ssh-channels-hub validate            # 先验配置
+ssh-channels-hub start               # 前台运行
+ssh-channels-hub start -D            # daemon
+ssh-channels-hub start --debug       # 调试日志
 ```
 
-常见错误：
+启动后访问 `http://localhost:18080`,流量经 SSH 隧道到 `远程服务器:127.0.0.1:8080`。
 
-- `hostname` 字段引用了不存在的 `hosts.name`
-- 缺少必需的字段（如 `name`、`hostname`、`ports` 等）
-- TOML 格式错误（括号不匹配、引号不匹配等）
+### 1.4 密码与 passphrase
+
+`~/.ssh/config` 存不了密码 / passphrase。需要时在 `configs.toml` 加 `[auth.<alias>]`:
+
+```toml
+# 密码登录(SSH config 无 IdentityFile)
+[auth.remote-server]
+password = "your-password"
+
+# 或:IdentityFile 受 passphrase 保护
+[auth.remote-server]
+passphrase = "your-key-passphrase"
+```
+
+**`password` 优先于 SSH config 的 `IdentityFile`** —— 一旦填写就走密码登录。
+
+---
+
+## 2. 远程端口转发(类 `ssh -R`)
+
+把**本机**服务暴露到**远程服务器**的端口。例如:服务器 `8022` 端口 → 本机 `127.0.0.1:80`。
+
+```toml
+[[channels]]
+name      = "expose-local-web"
+hostname  = "remote-server"     # ~/.ssh/config 里的别名
+direction = "remote->local"
+remote    = "8022"              # 服务器在 127.0.0.1:8022 绑定监听
+local     = "80"                # 收到连接桥接到本机 127.0.0.1:80
+```
+
+启动后:
+
+1. 工具向服务器发 `tcpip-forward`,在服务器上绑定 `8022`
+2. 任何对「服务器:8022」的连接,流量经 SSH 隧道到本机 `127.0.0.1:80`
+3. 服务器侧用 `curl http://127.0.0.1:8022` 或从外网访问「服务器公网IP:8022」可验证(外网需服务器防火墙放行)
+
+**注意**:`ssh-channels-hub test` 仅测本地监听端口,不验证远程转发,需在服务器侧实际连接验证。
+
+---
+
+## 3. 常见场景
+
+### 3.1 访问远程数据库
+
+`~/.ssh/config`:
+```
+Host db-server
+  HostName db.example.com
+  User admin
+  IdentityFile ~/.ssh/id_rsa
+```
+
+`configs.toml`:
+```toml
+[[channels]]
+name      = "mysql-tunnel"
+hostname  = "db-server"
+direction = "local->remote"
+local     = "3306"
+remote    = "3306"
+```
+
+之后 `mysql -h 127.0.0.1 -P 3306` 即连到远程 MySQL。
+
+### 3.2 访问远程 Web 服务
+
+`~/.ssh/config`:
+```
+Host web-server
+  HostName web.example.com
+  User deploy
+  IdentityFile ~/.ssh/deploy_key
+```
+
+`configs.toml`:
+```toml
+[[channels]]
+name      = "web-tunnel"
+hostname  = "web-server"
+direction = "local->remote"
+local     = "8080"
+remote    = "80"
+```
+
+浏览器访问 `http://localhost:8080`。
+
+### 3.3 密码登录的 Redis 服务器
+
+`~/.ssh/config`:
+```
+Host redis-server
+  HostName redis.example.com
+  User redis-user
+```
+
+`configs.toml`:
+```toml
+[[channels]]
+name      = "redis-tunnel"
+hostname  = "redis-server"
+direction = "local->remote"
+local     = "6379"
+remote    = "6379"
+
+[auth.redis-server]
+password = "your-password"
+```
+
+### 3.4 暴露给局域网
+
+```toml
+[[channels]]
+name      = "shared-tunnel"
+hostname  = "remote-server"
+direction = "local->remote"
+local     = "0.0.0.0:8080"      # 本机所有网卡都接受连接(默认 127.0.0.1)
+remote    = "80"
+```
+
+注意防火墙与安全风险。
+
+---
+
+## 4. 多 channels 管理
+
+```toml
+# ~/.ssh/config 里已配好 server1 / server2
+
+[[channels]]
+name      = "db-tunnel"
+hostname  = "server1"
+direction = "local->remote"
+local     = "3306"
+remote    = "3306"
+
+[[channels]]
+name      = "web-tunnel"
+hostname  = "server2"
+direction = "local->remote"
+local     = "8080"
+remote    = "80"
+
+[[channels]]
+name      = "redis-tunnel"
+hostname  = "server1"           # 多个 channel 可复用同一 alias
+direction = "local->remote"
+local     = "6379"
+remote    = "6379"
+
+# server2 是密码登录
+[auth.server2]
+password = "password2"
+
+[reconnection]
+max_retries = 0
+initial_delay_secs = 1
+max_delay_secs = 30
+use_exponential_backoff = true
+```
+
+- 所有 channels 在 `start` 时一起建立,各自独立重连
+- 每个 channel 独立建一条 SSH session(即便复用同一 alias)
+- `status` 可查看全部 channels 的状态
+
+---
+
+## 5. 故障排查
+
+### 5.1 连接失败
+
+先用原生 ssh 验证 SSH config 本身没问题:
+
+```bash
+ssh <alias>                  # 应能成功登录
+```
+
+如果原生 ssh 都连不上,问题在 SSH config / 密钥 / 网络,与本工具无关。
+
+### 5.2 端口被占用
+
+`start` 会预检本地端口。报错例:
+
+```text
+Error: Port(s) already in use: 18080, 3306. Please stop the application using these ports or change the configuration.
+```
+
+排查:
+
+```bash
+# Linux/macOS
+lsof -i :18080
+
+# Windows
+netstat -ano | findstr :18080
+```
+
+### 5.3 配置错误
+
+```bash
+ssh-channels-hub validate --debug
+```
+
+常见错误及解释见 [configuration.md §6](./configuration.md#6-故障排查):
+
+- `references host alias 'X', but no Host X block exists` → SSH config 缺该 alias
+- `missing HostName / User` → SSH config 中该 alias 不完整
+- `has no IdentityFile ... and no [auth.X].password` → 二选一补全
+
+### 5.4 端口转发不工作
+
+1. 在远程服务器上验证目标服务存在:`curl http://127.0.0.1:8080`
+2. `ssh-channels-hub start --debug` 看 SSH 握手与 channel 建立日志
+3. 远程转发(`direction = "remote->local"`)无法用 `test` 命令验证,需在服务器端实际连接
 
 ---
 
 ## 相关文档
 
-- [配置文档](./configuration.md) - 详细的配置说明
-- [架构设计](./architecture.md) - 系统架构说明
-- [工作流程](./workflow.md) - 应用程序工作流程
-
----
-
-## 反馈和建议
-
-如果遇到问题或有改进建议，请：
-
-1. 查看 [故障排查](#故障排查) 部分
-2. 检查 [配置文档](./configuration.md) 中的详细说明
-3. 提交 Issue 或 PR
+- [配置文档](./configuration.md) - 详细字段说明与示例
+- [架构设计](./architecture.md) - 系统整体设计
+- [工作流程](./workflow.md) - 启动 / 重连 / 关闭流程

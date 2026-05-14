@@ -1,0 +1,13 @@
+# scripts
+*.sh text eol=lf encoding=utf-8
+
+# config
+*.{yml,yaml} text eol=lf encoding=utf-8
+*.toml text eol=lf encoding=utf-8
+*.json text eol=lf encoding=utf-8
+
+# rust
+*.rs text eol=lf encoding=utf-8
+
+# docs
+*.{md,markdown} text eol=lf encoding=utf-8

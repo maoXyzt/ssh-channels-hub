@@ -1,59 +1,55 @@
-# SSH Channels Hub Configuration Example
+# SSH Channels Hub configuration
+#
+# Host info (HostName / User / Port / IdentityFile) is read from ~/.ssh/config.
+# This file only defines:
+#   - which channels to bring up
+#   - per-host credentials SSH config can't hold (password / passphrase)
+#   - reconnection policy
+#
+# Optional: point at a non-default SSH config path.
+# ssh_config = "~/.ssh/config"
 
-# --- Channel definitions ---
-# Channels reference hosts and define port forwarding
-[[channels]]
-name = "db-tunnel"
-hostname = "example-server"
-ports = "3306:3306"         # Format: "local:dest" (local port 3306 -> dest port 3306)
-# dest_host = "127.0.0.1"      # 可选，默认为 "127.0.0.1"
-
-[[channels]]
-name = "web-tunnel"
-hostname = "example-server2"
-ports = "8080:80"            # Format: "local:dest" (local port 8080 -> dest port 80)
-dest_host = "127.0.0.1"      # 可以显式指定，也可以省略（使用默认值）
-# listen_host = "127.0.0.1"   # 本地监听地址，默认 127.0.0.1；填 "0.0.0.0" 可接受任意网卡连接
-
-# Remote forward (ssh -R style): bind port on server, bridge to local
-# [[channels]]
-# name = "expose-local-web"
-# channel_type = "forwarded-tcpip"
-# hostname = "example-server"
-# ports = "8022:80"          # Format: "remote:local" (server port 8022 -> local 127.0.0.1:80)
-# dest_host = "127.0.0.1"    # Local host to connect to (default 127.0.0.1)
-
-# --- Reconnection settings ---
-# (applies to all channels)
+# --- Reconnection settings (applies to all channels) ---
 [reconnection]
-# Maximum retry attempts (0 = unlimited)
-max_retries = 0
-# Initial delay in seconds before retry
+max_retries = 0                       # 0 = unlimited
 initial_delay_secs = 1
-# Maximum delay in seconds between retries
 max_delay_secs = 30
-# Use exponential backoff (true) or fixed interval (false)
 use_exponential_backoff = true
 
-# --- SSH Host definitions ---
-# Hosts define how to connect to remote SSH servers
-[[hosts]]
-name = "example-server"
-host = "example.com"
-username = "user"
+# --- Per-host credential overrides (optional) ---
+# Only needed when SSH config alone can't authenticate (password-auth host,
+# or IdentityFile with a passphrase). Keyed by SSH config Host alias.
 
-[hosts.auth]
-type = "key"
-key_path = "~/.ssh/id_rsa"
-# Optional passphrase for the key
-# passphrase = "your-key-passphrase"
+# [auth.example-server]
+# passphrase = "key-passphrase"
 
-# Another host example with password authentication
-[[hosts]]
-name = "example-server2"
-host = "example2.com"
-username = "user2"
+# [auth.example-server2]
+# password = "your-password-here"
 
-[hosts.auth]
-type = "password"
-password = "your-password-here"
+# --- Channel definitions ---
+# `hostname` is the SSH config Host alias.
+# `local` / `remote` are "host:port" (host defaults to 127.0.0.1) — they
+# always literally mean the local / remote side, regardless of direction.
+# Append new `[[channels]]` blocks below; nothing else needs to follow them.
+
+[[channels]]
+name      = "db-tunnel"
+hostname  = "example-server"
+direction = "local->remote"           # ssh -L: listen on `local`, forward to `remote`
+local     = "3306"
+remote    = "3306"
+
+[[channels]]
+name      = "web-tunnel"
+hostname  = "example-server2"
+direction = "local->remote"
+local     = "0.0.0.0:8080"
+remote    = "127.0.0.1:80"
+
+# Expose a local service on the SSH server:
+# [[channels]]
+# name      = "expose-local-web"
+# hostname  = "example-server"
+# direction = "remote->local"         # ssh -R: server binds `remote`, bridge to `local`
+# remote    = "8022"
+# local     = "80"
