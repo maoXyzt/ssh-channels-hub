@@ -20,16 +20,18 @@
 
 **1. 安装**
 
+从 [crates.io](https://crates.io/crates/ssh-channels-hub) 安装(推荐):
+
 ```bash
-cargo install ssh-channels-hub  # 从 crates.io 安装(推荐)
+cargo install ssh-channels-hub
 ```
-cargo build --release           # 二进制位于 target/release/ssh-channels-hub (Windows 为 .exe)
+
 或从源码构建:
 
 ```bash
 cargo install --path .          # 在仓库 clone 内构建并安装
 # 或
-cargo build --release           # 二进制位于 target/release/ssh-channels-hub
+cargo build --release           # 二进制位于 target/release/ssh-channels-hub(Windows 为 .exe)
 ```
 
 **2. 确保 `~/.ssh/config` 里有目标 host**
