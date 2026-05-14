@@ -188,9 +188,6 @@ pub enum ChannelTypeParams {
     local_connect_host: String,
     local_connect_port: u16,
   },
-  /// Session channel (e.g. shell or single command).
-  #[allow(dead_code)]
-  Session { command: Option<String> },
 }
 
 /// Authentication configuration (runtime — used by SSH layer)
@@ -295,10 +292,10 @@ impl Default for ReconnectionConfig {
 }
 
 impl ConnectionConfig {
-  /// Port opened on this machine, or `None` when the bind happens on the server.
-  pub fn local_listen_port(&self) -> Option<u16> {
+  /// `(host, port)` bound on this machine, or `None` when the bind happens on the server.
+  pub fn local_listen_bind(&self) -> Option<(String, u16)> {
     match self.direction {
-      Direction::LocalToRemote => Some(self.local.port),
+      Direction::LocalToRemote => Some((self.local.host.clone(), self.local.port)),
       Direction::RemoteToLocal => None,
     }
   }

@@ -317,18 +317,18 @@ remote = "3306"
 }
 
 #[test]
-fn local_listen_port_only_reported_for_local_to_remote() {
+fn local_listen_bind_only_reported_for_local_to_remote() {
   let l2r: ConnectionConfig = toml::from_str(
     r#"
 name = "out"
 hostname = "myserver"
 direction = "local->remote"
-local = "3306"
+local = "0.0.0.0:3306"
 remote = "3306"
 "#,
   )
   .unwrap();
-  assert_eq!(l2r.local_listen_port(), Some(3306));
+  assert_eq!(l2r.local_listen_bind(), Some(("0.0.0.0".to_string(), 3306)));
   assert_eq!(l2r.direction, Direction::LocalToRemote);
 
   let r2l: ConnectionConfig = toml::from_str(
@@ -341,7 +341,7 @@ local = "80"
 "#,
   )
   .unwrap();
-  assert_eq!(r2l.local_listen_port(), None);
+  assert_eq!(r2l.local_listen_bind(), None);
   assert_eq!(r2l.direction, Direction::RemoteToLocal);
 }
 

@@ -50,30 +50,31 @@ impl ServiceManager {
     info!("Starting SSH Channels Hub service");
 
     // Check port availability before starting channels
-    let ports_to_check: Vec<u16> = self
+    let binds_to_check: Vec<(String, u16)> = self
       .config
       .channels
       .iter()
-      .filter_map(|conn| conn.local_listen_port())
+      .filter_map(|conn| conn.local_listen_bind())
       .collect();
 
-    if !ports_to_check.is_empty() {
+    if !binds_to_check.is_empty() {
       info!(
-        "Checking port availability for {} port(s)",
-        ports_to_check.len()
+        "Checking port availability for {} bind(s)",
+        binds_to_check.len()
       );
-      match check_ports(&ports_to_check).await {
+      match check_ports(&binds_to_check).await {
         Ok(occupied) => {
           if !occupied.is_empty() {
+            let listing = occupied
+              .iter()
+              .map(|(h, p)| format!("{}:{}", h, p))
+              .collect::<Vec<_>>()
+              .join(", ");
             let error_msg = format!(
-              "Port(s) already in use: {}. Please stop the application using these ports or change the configuration.",
-              occupied
-                .iter()
-                .map(|p: &u16| p.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+              "Address(es) already in use: {}. Please stop the application using these ports or change the configuration.",
+              listing
             );
-            error!(ports = ?occupied, "Port check failed");
+            error!(occupied = %listing, "Port check failed");
             let mut state = self.state.lock().await;
             *state = ServiceState::Error(error_msg.clone());
             return Err(AppError::Service(error_msg));
@@ -134,12 +135,6 @@ impl ServiceManager {
                 dest_info,
                 channel_config.username,
                 channel_config.host
-              );
-            }
-            ChannelTypeParams::Session { .. } => {
-              println!(
-                "✓ Channel '{}' started (session) ({}@{})",
-                channel_config.name, channel_config.username, channel_config.host
               );
             }
           }

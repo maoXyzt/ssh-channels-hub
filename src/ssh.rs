@@ -193,28 +193,13 @@ impl SshManager {
         "Establishing SSH connection"
     );
 
-    if let ChannelTypeParams::ForwardedTcpIp { .. } = &config.params {
-      return run_forwarded_tcpip(config, cancel).await;
-    }
-
-    let mut session = connect_and_authenticate(config, ClientHandler).await?;
-
-    info!(channel = %config.name, "Opening channel");
-
     match &config.params {
-      ChannelTypeParams::Session { .. } => {
-        open_session_channel(&mut session, config).await?;
-        info!(channel = %config.name, "Channel opened successfully");
-        loop {
-          tokio::time::sleep(Duration::from_secs(30)).await;
-        }
-      }
+      ChannelTypeParams::ForwardedTcpIp { .. } => run_forwarded_tcpip(config, cancel).await,
       ChannelTypeParams::DirectTcpIp { .. } => {
-        return run_direct_tcpip_listener(&mut session, config, cancel).await;
+        let mut session = connect_and_authenticate(config, ClientHandler).await?;
+        info!(channel = %config.name, "Opening channel");
+        run_direct_tcpip_listener(&mut session, config, cancel).await
       }
-      ChannelTypeParams::ForwardedTcpIp { .. } => Err(AppError::SshChannel(
-        "forwarded-tcpip should be handled earlier".to_string(),
-      )),
     }
   }
 }
@@ -340,61 +325,6 @@ async fn load_secret_key(key_path: &Path, passphrase: Option<&str>) -> Result<Ke
   })
   .await
   .map_err(|e| AppError::SshAuthentication(format!("Task join error: {}", e)))?
-}
-
-/// Open a session channel
-async fn open_session_channel(
-  session: &mut client::Handle<ClientHandler>,
-  config: &ChannelConfig,
-) -> Result<()> {
-  let channel = session
-    .channel_open_session()
-    .await
-    .map_err(|e| AppError::SshChannel(format!("Failed to open session channel: {}", e)))?;
-
-  // If a command is specified, execute it
-  let command = match &config.params {
-    ChannelTypeParams::Session { command } => command.as_ref(),
-    _ => None,
-  };
-  if let Some(command) = command {
-    channel
-      .exec(true, command.as_str())
-      .await
-      .map_err(|e| AppError::SshChannel(format!("Failed to execute command: {}", e)))?;
-  } else {
-    // Open a shell - request PTY first
-    channel
-      .request_pty(false, "xterm", 80, 24, 0, 0, &[])
-      .await
-      .map_err(|e| AppError::SshChannel(format!("Failed to request PTY: {}", e)))?;
-
-    // For session channels without a command, we keep it open
-    // The shell will be opened when data is sent
-    info!(channel = %config.name, "Session channel ready");
-  }
-
-  // Spawn task to handle channel data
-  let channel_id = channel.id();
-  tokio::spawn({
-    let mut channel = channel;
-    async move {
-      loop {
-        match channel.wait().await {
-          Some(msg) => {
-            debug!(channel_id = %channel_id, message = ?msg, "Channel message");
-            // Handle channel messages
-          }
-          None => {
-            warn!(channel_id = %channel_id, "Channel closed");
-            break;
-          }
-        }
-      }
-    }
-  });
-
-  Ok(())
 }
 
 /// Run local TCP listener and forward each connection via a new direct-tcpip channel.

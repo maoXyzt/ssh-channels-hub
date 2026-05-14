@@ -538,7 +538,6 @@ async fn handle_validate(config_path: Option<std::path::PathBuf>) -> AnyhowResul
         "remote->local (bind {}:{} -> local {}:{})",
         remote_bind_host, remote_bind_port, local_connect_host, local_connect_port
       ),
-      config::ChannelTypeParams::Session { .. } => "session".to_string(),
     };
     println!(
       "    - {} via {}@{}:{} | {}",
