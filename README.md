@@ -21,7 +21,13 @@ Reach for this when `ssh -L 3306:127.0.0.1:3306 db.example.com` has grown into *
 **1. Install**
 
 ```bash
-cargo install --path .          # from a clone
+cargo install ssh-channels-hub  # from crates.io (recommended)
+```
+
+Or from a clone:
+
+```bash
+cargo install --path .          # build & install from this checkout
 # or
 cargo build --release           # binary at target/release/ssh-channels-hub
 ```

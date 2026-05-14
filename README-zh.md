@@ -21,7 +21,13 @@
 **1. 安装**
 
 ```bash
-cargo install --path .          # 在仓库 clone 里
+cargo install ssh-channels-hub  # 从 crates.io 安装(推荐)
+```
+
+或从源码构建:
+
+```bash
+cargo install --path .          # 在仓库 clone 内构建并安装
 # 或
 cargo build --release           # 二进制位于 target/release/ssh-channels-hub
 ```
