@@ -1,223 +1,182 @@
 # SSH Channels Hub
 
-A CLI application to create and manage SSH channels (port forwarding over SSH).
+> English | [中文](./README-zh.md)
 
-Cross-platform (Windows, Linux), written in Rust.
+Declarative SSH tunnels with auto-reconnect. Define your port forwards once in TOML, start one service, and they all come up — reconnecting automatically when the link drops.
 
-## Features
+Cross-platform (Linux, macOS, Windows). Written in Rust on top of [russh](https://docs.rs/russh).
 
-- **Port forwarding**: Local-to-remote (ssh -L) and remote-to-local (ssh -R) tunnels in one declarative config.
-- **Reads `~/.ssh/config` directly**: host info (HostName / User / Port / IdentityFile) lives in your SSH config. `configs.toml` only declares which channels to bring up.
-- **Automatic reconnection**: Reconnect with configurable backoff when the connection is lost.
-- **Foreground / daemon**: Default `start` runs in foreground; `start -D` runs as daemon (detached). Stop and restart use IPC so the process exits cleanly.
-- **Config validation + scaffolding**: `validate` checks alias resolution against SSH config; `generate` scaffolds a `configs.toml` from existing aliases.
+## Why
 
-## Usage
+Reach for this when `ssh -L 3306:127.0.0.1:3306 db.example.com` has grown into *"I have five of those, my laptop sleeps, my Wi-Fi flakes, and I want them all back when I open the lid."*
 
-### Installation
+- **Declarative**: tunnels live in `configs.toml`, not in shell history or terminal panes.
+- **No host config duplication**: host info (`HostName` / `User` / `Port` / `IdentityFile`) is read straight from `~/.ssh/config` — you reference aliases.
+- **Auto-reconnect**: configurable backoff per tunnel; one drop doesn't take the others down.
+- **Both directions in one schema**: local-to-remote (`ssh -L`) and remote-to-local (`ssh -R`).
+- **Foreground or daemon**: `start` attaches to the terminal, `start -D` detaches; `stop` / `restart` / `status` talk to the running process via IPC.
 
-Build from source:
+## Quickstart
+
+**1. Install**
 
 ```bash
-cargo build --release
+cargo install ssh-channels-hub  # from crates.io (recommended)
 ```
-
-The binary will be at `target/release/ssh-channels-hub` (or `ssh-channels-hub.exe` on Windows).
-
-### Configuration
-
-1. **Config file location** (default; first existing wins):
-   - **Current directory**: `./configs.toml`
-   - **Linux/macOS**: `~/.config/ssh-channels-hub/config.toml`
-   - **Windows**: `%APPDATA%\ssh-channels-hub\config.toml`
-
-2. **Copy the example config**:
-
-   ```bash
-   cp configs.example.toml configs.toml
-   # or into platform dir:
-   mkdir -p ~/.config/ssh-channels-hub
-   cp configs.example.toml ~/.config/ssh-channels-hub/config.toml
-   ```
-
-3. Edit `configs.toml` with your channels. Host info (HostName / User / Port / IdentityFile) is read from `~/.ssh/config` — make sure each `hostname` in `configs.toml` matches a `Host <alias>` block there. Use `--config /path/to/config.toml` to override the config path. See [Configuration](docs/configuration.md) for details.
-
-### Basic Commands
-
-#### Start the service
-
-**Foreground** (default; press Ctrl+C to stop):
+cargo build --release           # binary at target/release/ssh-channels-hub (or .exe on Windows)
+Or from a clone:
 
 ```bash
-ssh-channels-hub start
-```
-
-**Daemon** (background; spawns detached process):
-
-```bash
-ssh-channels-hub start -D
+cargo install --path .          # build & install from this checkout
 # or
-ssh-channels-hub start --daemon
+cargo build --release           # binary at target/release/ssh-channels-hub
 ```
 
-Custom config:
+**2. Have the host in `~/.ssh/config`**
 
-```bash
-ssh-channels-hub start --config /path/to/config.toml
 ```
-
-Debug logging:
-
-```bash
-ssh-channels-hub start --debug
-```
-
-#### Stop the service
-
-Sends a stop signal via IPC so the service exits gracefully, then removes run files (`.pid`, `.port`). Use the same `--config` as start if you use a non-default config.
-
-```bash
-ssh-channels-hub stop
-ssh-channels-hub stop --config /path/to/config.toml
-```
-
-#### Restart the service
-
-Stops the running service (via IPC if running), then starts it again as a **daemon**. Use the same `--config` as the running service.
-
-```bash
-ssh-channels-hub restart
-```
-
-#### Check service status
-
-Connects to the running process via IPC and shows state (with emoji), active channels, config path, PID, and channel list. If the service is not running, shows Stopped and channel list from config.
-
-```bash
-ssh-channels-hub status
-ssh-channels-hub status --config /path/to/config.toml
-```
-
-#### Test channels
-
-Test that configured channels are reachable (connect to local ports):
-
-```bash
-ssh-channels-hub test
-ssh-channels-hub test --config /path/to/config.toml
-```
-
-#### Validate configuration
-
-```bash
-ssh-channels-hub validate
-ssh-channels-hub validate --config /path/to/config.toml
-```
-
-#### Generate configs.toml scaffold
-
-Scan `~/.ssh/config` and emit a `configs.toml` with one commented-out `[[channels]]` template per alias:
-
-```bash
-ssh-channels-hub generate
-ssh-channels-hub generate --ssh-config /path/to/ssh_config --output /path/to/configs.toml
-```
-
-Uncomment the channels you want and fill in `local` / `remote` ports (or `host:port`).
-
-### Configuration format (summary)
-
-`~/.ssh/config` (per host):
-```
-Host my-alias
-  HostName example.com
+Host my-db
+  HostName db.example.com
   User myuser
-  Port 22                     # optional, default 22
-  IdentityFile ~/.ssh/id_rsa  # optional; required unless you put a password in configs.toml
-```
-
-`configs.toml`:
-- **Channels** (`[[channels]]`): `name`, `hostname` (the SSH config alias), `direction`, `local`, `remote`.
-  - `direction = "local->remote"` (ssh -L): this machine listens on `local`, traffic flows out to `remote`.
-  - `direction = "remote->local"` (ssh -R): the SSH server binds `remote`, traffic is bridged back to `local` on this side.
-  - `local` / `remote` accept `"port"` (host defaults to `127.0.0.1`), `"host:port"`, or `"[ipv6]:port"`.
-- **Per-host overrides** (`[auth.<alias>]`, optional): `password` for password-auth hosts, or `passphrase` for encrypted IdentityFile. SSH config can't hold either.
-
-### Configuration examples
-
-#### Port forwarding (local 8080 → remote 80)
-
-`~/.ssh/config`:
-```
-Host web-server
-  HostName example.com
-  User user
   IdentityFile ~/.ssh/id_rsa
 ```
 
-`configs.toml`:
+**3. Write `configs.toml`** in the current directory:
+
 ```toml
 [[channels]]
-name      = "web-tunnel"
-hostname  = "web-server"
-direction = "local->remote"
-local     = "8080"          # listen on 127.0.0.1:8080
-remote    = "80"            # server dials 127.0.0.1:80
+name      = "db"
+hostname  = "my-db"             # alias from ~/.ssh/config
+direction = "local->remote"     # ssh -L
+local     = "3306"              # listen on 127.0.0.1:3306
+remote    = "3306"              # server connects to 127.0.0.1:3306
 ```
 
-#### Port forwarding (listen on all interfaces)
+**4. Run**
+
+```bash
+ssh-channels-hub start          # Ctrl+C to stop
+```
+
+Now `mysql -h 127.0.0.1 -P 3306` goes through the tunnel.
+
+> **Tip:** `ssh-channels-hub generate -o configs.toml` scaffolds one commented-out `[[channels]]` block per alias in your SSH config — uncomment and fill in ports. Or `cp configs.example.toml configs.toml` for an annotated template.
+
+## Configuration
+
+`configs.toml` is looked up in this order (first existing wins):
+
+| Platform | Path |
+|---|---|
+| Current directory (always tried first) | `./configs.toml` |
+| Linux / macOS | `~/.config/ssh-channels-hub/config.toml` |
+| Windows | `%APPDATA%\ssh-channels-hub\config.toml` |
+
+`--config /path/to/file` overrides the lookup.
+
+### Channel schema
 
 ```toml
 [[channels]]
-name      = "db-tunnel"
+name      = "string"                            # required, unique identifier
+hostname  = "ssh-config-alias"                  # required; resolves via ~/.ssh/config
+direction = "local->remote" | "remote->local"   # required
+local     = "port" | "host:port"                # required, this machine's side
+remote    = "port" | "host:port"                # required, the SSH server's side
+```
+
+`local` and `remote` always name the address on their respective side regardless of direction. Direction decides who listens:
+
+- **`local->remote`** (≈ `ssh -L`): this machine listens on `local`; the server dials `remote` for each connection.
+- **`remote->local`** (≈ `ssh -R`): the server binds `remote`; incoming traffic is bridged to `local` on this side.
+
+Endpoints accept:
+- `"3306"` → `127.0.0.1:3306` (bare port, host defaults to loopback)
+- `"127.0.0.1:3306"` → explicit form
+- `"0.0.0.0:8080"` → bind on every interface
+- `"[::1]:3306"` → IPv6
+
+### Credentials
+
+`~/.ssh/config` can't hold passwords or key passphrases. When SSH config alone can't authenticate the host, add an `[auth.<alias>]` block keyed by the SSH config alias:
+
+```toml
+[auth.my-db]
+password   = "..."          # for password-auth hosts (no IdentityFile in SSH config)
+# or
+passphrase = "..."          # for encrypted IdentityFile
+```
+
+`password` overrides any `IdentityFile`. Hosts that authenticate cleanly via SSH config alone don't need an `[auth.*]` block at all.
+
+### Reconnection (global)
+
+```toml
+[reconnection]
+max_retries             = 0     # 0 = unlimited
+initial_delay_secs      = 1
+max_delay_secs          = 30
+use_exponential_backoff = true
+```
+
+### More examples
+
+**Listen on every interface** so other LAN machines can use the tunnel (mind your firewall):
+
+```toml
+[[channels]]
+name      = "shared-db"
 hostname  = "db-server"
 direction = "local->remote"
 local     = "0.0.0.0:3306"
 remote    = "3306"
 ```
 
-#### Password authentication
-
-`~/.ssh/config` has no `IdentityFile` for this host, so provide a password in `configs.toml`:
-
-```toml
-[[channels]]
-name      = "jumpbox-web"
-hostname  = "jumpbox"
-direction = "local->remote"
-local     = "8080"
-remote    = "80"
-
-[auth.jumpbox]
-password = "your-password"
-```
-
-#### Remote port forwarding (ssh -R style)
+**Expose a local service to the SSH server** (`ssh -R`):
 
 ```toml
 [[channels]]
 name      = "expose-local-web"
-hostname  = "web-server"
+hostname  = "jumpbox"
 direction = "remote->local"
-remote    = "8022"          # server binds 127.0.0.1:8022 (use "0.0.0.0:8022" with GatewayPorts)
-local     = "80"            # incoming traffic is bridged to 127.0.0.1:80 here
+remote    = "8022"              # server binds 127.0.0.1:8022
+local     = "80"                # incoming traffic bridges to 127.0.0.1:80 here
 ```
 
-### Common use cases
+(For the server to bind `0.0.0.0:8022`, set `remote = "0.0.0.0:8022"` **and** enable `GatewayPorts` in the server's `sshd_config`.)
 
-1. **Secure DB access**: Forward local 3306 to remote MySQL (`local = "3306"`, `remote = "3306"`).
-2. **Remote web service**: Forward local 8080 to remote 80 (`local = "8080"`, `remote = "80"`).
-3. **Remote forward (ssh -R)**: Expose local service on server (`direction = "remote->local"`, `remote = "8022"`, `local = "80"`).
-4. **Multiple tunnels**: Define several channels; all start together and reconnect independently.
-5. **Expose to LAN**: Set `local = "0.0.0.0:<port>"` so other machines can use the tunnel (consider firewall and security).
+Full field reference: [docs/configuration.md](docs/configuration.md).
 
-### Troubleshooting
+## Commands
 
-- **Connection fails**: Check SSH credentials and network; try `ssh user@host` manually.
-- **Port in use**: Change `local` (e.g. use 18080 instead of 80) or stop the app using the port.
-- **Bind 80 on Windows**: Often requires running as Administrator.
-- **Config errors**: Run `ssh-channels-hub validate`.
-- **Debug**: Use `ssh-channels-hub start --debug` or `--debug` with any command.
-- **Key permissions**: Ensure SSH key file has correct permissions (e.g. 600).
+| Command | What it does |
+|---|---|
+| `start` | Run in the foreground (Ctrl+C to stop). |
+| `start -D` / `--daemon` | Spawn a detached background process. |
+| `stop` | Tell the running process to exit gracefully (via IPC). |
+| `restart` | Stop the running service, then re-start as daemon. |
+| `status` | Show state, active vs total channels, PID, and the channel list. |
+| `test` | Probe each configured `local->remote` listener to confirm the tunnel is alive. `remote->local` channels are skipped — verify those server-side. |
+| `validate` | Resolve every channel against `~/.ssh/config` and report any problems. |
+| `generate -o configs.toml` | Scaffold a `configs.toml` from existing SSH config aliases. |
 
-More details: [Documentation](docs/README.md), [How to use](docs/HowToUse.md), [Configuration](docs/configuration.md).
+All commands accept `--config /path/to/configs.toml` to point at a non-default file, and `--debug` for verbose logging.
+
+## Troubleshooting
+
+- **`Channel '...' references host alias '...', but no Host ... block exists`** — typo in `hostname`, or the alias is missing from `~/.ssh/config`.
+- **`Address(es) already in use`** — something else is bound to your `local` address. Change the port or stop the other process. Find the culprit with `lsof -i :PORT` (Linux/macOS) or `netstat -ano | findstr :PORT` (Windows).
+- **Bind ports < 1024** — needs root (Linux/macOS) or Administrator (Windows).
+- **Connection fails** — `ssh <alias>` manually first to isolate SSH config / network / key permission issues.
+- **Encrypted key not unlocking** — set `[auth.<alias>] passphrase = "..."`.
+- **Full debug output** — `ssh-channels-hub start --debug` logs each channel's SSH handshake, channel open, and reconnection attempts.
+
+## Further reading
+
+- [Configuration reference](docs/configuration.md) — every field, every edge case.
+- [How to use](docs/HowToUse.md) — task-oriented walkthroughs.
+- [Architecture](docs/architecture.md) — how channels, sessions, and reconnection fit together.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
