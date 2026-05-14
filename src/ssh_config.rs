@@ -97,10 +97,11 @@ fn parse_ssh_config_content(content: &str) -> Result<Vec<SshConfigEntry>> {
     if !aliases.is_empty() {
       if *is_default {
         // Multiple `Host *` blocks are merged, first occurrence wins (per ssh_config(5)).
+        // `take().or(...)` so existing String / PathBuf values are moved, not cloned.
         let new = extract_defaults(cfg);
         defaults.port = defaults.port.or(new.port);
-        defaults.user = defaults.user.clone().or(new.user);
-        defaults.identity_file = defaults.identity_file.clone().or(new.identity_file);
+        defaults.user = defaults.user.take().or(new.user);
+        defaults.identity_file = defaults.identity_file.take().or(new.identity_file);
       } else {
         for alias in aliases.iter() {
           if let Some(entry) = build_entry(alias, cfg, defaults) {
