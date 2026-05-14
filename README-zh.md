@@ -23,7 +23,7 @@
 ```bash
 cargo install ssh-channels-hub  # 从 crates.io 安装(推荐)
 ```
-
+cargo build --release           # 二进制位于 target/release/ssh-channels-hub (Windows 为 .exe)
 或从源码构建:
 
 ```bash
