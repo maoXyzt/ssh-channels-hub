@@ -54,7 +54,7 @@ impl ServiceManager {
       .config
       .channels
       .iter()
-      .filter_map(|conn| conn.ports.local_port)
+      .filter_map(|conn| conn.local_listen_port())
       .collect();
 
     if !ports_to_check.is_empty() {
@@ -104,15 +104,17 @@ impl ServiceManager {
         Ok(_) => {
           match &channel_config.params {
             ChannelTypeParams::ForwardedTcpIp {
+              remote_bind_host,
               remote_bind_port,
               local_connect_host,
               local_connect_port,
             } => {
+              let remote = format!("{}:{}", remote_bind_host, remote_bind_port);
               let local_dest = format!("{}:{}", local_connect_host, local_connect_port);
               println!(
-                "✓ Channel '{}' started: remote:{} -> local {} ({}@{})",
+                "✓ Channel '{}' started: remote {} -> local {} ({}@{})",
                 channel_config.name,
-                remote_bind_port,
+                remote,
                 local_dest,
                 channel_config.username,
                 channel_config.host

@@ -7,38 +7,18 @@
 #   - reconnection policy
 #
 # Optional: point at a non-default SSH config path.
-# Defaults to ~/.ssh/config when unset.
 # ssh_config = "~/.ssh/config"
 
-# --- Channel definitions ---
-# `hostname` is the SSH config Host alias (the word after `Host` in ~/.ssh/config).
-
-[[channels]]
-name = "db-tunnel"
-hostname = "example-server"   # matches `Host example-server` in ~/.ssh/config
-ports = "3306:3306"           # local 3306 -> remote 3306
-# dest_host = "127.0.0.1"     # optional, default 127.0.0.1
-# listen_host = "127.0.0.1"   # optional, default 127.0.0.1; "0.0.0.0" exposes on all NICs
-
-[[channels]]
-name = "web-tunnel"
-hostname = "example-server2"
-ports = "8080:80"
-dest_host = "127.0.0.1"
-
-# Remote forward (ssh -R style): bind a port on the server, bridge to local.
-# [[channels]]
-# name = "expose-local-web"
-# channel_type = "forwarded-tcpip"
-# hostname = "example-server"
-# ports = "80:8022"           # local 80 (we connect to) : remote 8022 (server binds)
-# dest_host = "127.0.0.1"     # local host to connect to (default 127.0.0.1)
+# --- Reconnection settings (applies to all channels) ---
+[reconnection]
+max_retries = 0                       # 0 = unlimited
+initial_delay_secs = 1
+max_delay_secs = 30
+use_exponential_backoff = true
 
 # --- Per-host credential overrides (optional) ---
-# Only needed when ~/.ssh/config can't fully authenticate the host:
-#   - host uses password auth (SSH config has no IdentityFile)
-#   - IdentityFile is encrypted with a passphrase
-# Keyed by the SSH config Host alias. Both fields are optional.
+# Only needed when SSH config alone can't authenticate (password-auth host,
+# or IdentityFile with a passphrase). Keyed by SSH config Host alias.
 
 # [auth.example-server]
 # passphrase = "key-passphrase"
@@ -46,13 +26,30 @@ dest_host = "127.0.0.1"
 # [auth.example-server2]
 # password = "your-password-here"
 
-# --- Reconnection settings (applies to all channels) ---
-[reconnection]
-# Maximum retry attempts (0 = unlimited)
-max_retries = 0
-# Initial delay in seconds before retry
-initial_delay_secs = 1
-# Maximum delay in seconds between retries
-max_delay_secs = 30
-# Exponential backoff (true) or fixed interval (false)
-use_exponential_backoff = true
+# --- Channel definitions ---
+# `hostname` is the SSH config Host alias.
+# `local` / `remote` are "host:port" (host defaults to 127.0.0.1) — they
+# always literally mean the local / remote side, regardless of direction.
+# Append new `[[channels]]` blocks below; nothing else needs to follow them.
+
+[[channels]]
+name      = "db-tunnel"
+hostname  = "example-server"
+direction = "local->remote"           # ssh -L: listen on `local`, forward to `remote`
+local     = "3306"
+remote    = "3306"
+
+[[channels]]
+name      = "web-tunnel"
+hostname  = "example-server2"
+direction = "local->remote"
+local     = "0.0.0.0:8080"
+remote    = "127.0.0.1:80"
+
+# Expose a local service on the SSH server:
+# [[channels]]
+# name      = "expose-local-web"
+# hostname  = "example-server"
+# direction = "remote->local"         # ssh -R: server binds `remote`, bridge to `local`
+# remote    = "8022"
+# local     = "80"

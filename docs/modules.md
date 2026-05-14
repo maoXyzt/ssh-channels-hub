@@ -84,10 +84,19 @@ pub struct AppConfig {
 pub struct ConnectionConfig {
     pub name: String,
     pub hostname: String,                      // SSH config 里的 Host alias
-    pub channel_type: Option<String>,
-    pub ports: PortForward,                    // "local:dest"
-    pub dest_host: String,
-    pub listen_host: String,
+    pub direction: Direction,                  // "local->remote" 或 "remote->local"
+    pub local: Endpoint,                       // 本机这一侧的 host:port
+    pub remote: Endpoint,                      // 远端这一侧的 host:port
+}
+
+pub enum Direction {
+    LocalToRemote,                             // ssh -L: 本机监听,流量出
+    RemoteToLocal,                             // ssh -R: 服务器绑定,流量入
+}
+
+pub struct Endpoint {
+    pub host: String,                          // 默认 "127.0.0.1"
+    pub port: u16,
 }
 
 pub struct AuthOverride {
@@ -102,8 +111,7 @@ pub struct ChannelConfig {
     pub port: u16,                             // resolved from SSH Port, default 22
     pub username: String,                      // resolved from SSH User
     pub auth: AuthConfig,
-    pub channel_type: String,
-    pub params: ChannelTypeParams,
+    pub params: ChannelTypeParams,             // DirectTcpIp / ForwardedTcpIp / Session
 }
 
 pub enum AuthConfig {

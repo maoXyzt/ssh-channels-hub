@@ -4,109 +4,156 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Port forwarding configuration (local:dest format)
-#[derive(Debug, Clone)]
-pub struct PortForward {
-  /// Local port to bind (required)
-  pub local_port: Option<u16>,
-  /// Destination port (required)
-  pub dest_port: u16,
+/// Tunnel direction. `LocalToRemote` ≈ `ssh -L`, `RemoteToLocal` ≈ `ssh -R`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+  LocalToRemote,
+  RemoteToLocal,
 }
 
-impl PortForward {
-  /// Parse port forward string in format "local:dest"
-  /// Both local and dest ports are required (e.g., "80:3923")
-  fn parse(s: &str) -> Result<Self> {
-    let parts: Vec<&str> = s.split(':').collect();
-    if parts.len() != 2 {
-      return Err(AppError::Config(format!(
-        "Invalid port format '{}'. Expected format: 'local:dest' (e.g., '80:3923')",
-        s
-      )));
+impl Direction {
+  pub fn as_arrow(self) -> &'static str {
+    match self {
+      Direction::LocalToRemote => "local->remote",
+      Direction::RemoteToLocal => "remote->local",
     }
-
-    if parts[0].is_empty() {
-      return Err(AppError::Config(format!(
-        "Invalid port format '{}'. Local port cannot be empty. Expected format: 'local:dest' (e.g., '80:3923')",
-        s
-      )));
-    }
-
-    if parts[1].is_empty() {
-      return Err(AppError::Config(format!(
-        "Invalid port format '{}'. Destination port cannot be empty. Expected format: 'local:dest' (e.g., '80:3923')",
-        s
-      )));
-    }
-
-    let local_port = parts[0]
-      .parse::<u16>()
-      .map_err(|e| AppError::Config(format!("Invalid local port '{}': {}", parts[0], e)))?;
-
-    let dest_port = parts[1]
-      .parse::<u16>()
-      .map_err(|e| AppError::Config(format!("Invalid destination port '{}': {}", parts[1], e)))?;
-
-    Ok(PortForward {
-      local_port: Some(local_port),
-      dest_port,
-    })
   }
 }
 
-impl<'de> Deserialize<'de> for PortForward {
+impl<'de> Deserialize<'de> for Direction {
   fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
   where
     D: Deserializer<'de>,
   {
     let s = String::deserialize(deserializer)?;
-    PortForward::parse(&s).map_err(serde::de::Error::custom)
+    match s.as_str() {
+      "local->remote" => Ok(Direction::LocalToRemote),
+      "remote->local" => Ok(Direction::RemoteToLocal),
+      other => Err(serde::de::Error::custom(format!(
+        "invalid direction '{}', expected \"local->remote\" or \"remote->local\"",
+        other
+      ))),
+    }
   }
 }
 
-impl Serialize for PortForward {
+impl Serialize for Direction {
   fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
   where
     S: Serializer,
   {
-    let local = self.local_port.expect("local_port must be set");
-    let s = format!("{}:{}", local, self.dest_port);
-    serializer.serialize_str(&s)
+    serializer.serialize_str(self.as_arrow())
   }
 }
 
-/// Channel definition referencing an SSH config Host alias
+/// `host:port`, `[ipv6]:port`, or bare `port` (host defaults to 127.0.0.1).
+///
+/// Examples:
+/// - `"3306"`             → `127.0.0.1:3306`
+/// - `"0.0.0.0:8022"`     → `0.0.0.0:8022`
+/// - `"db.internal:5432"` → `db.internal:5432`
+/// - `"[::1]:3306"`       → `::1:3306`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Endpoint {
+  pub host: String,
+  pub port: u16,
+}
+
+impl Endpoint {
+  fn parse(s: &str) -> Result<Self> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+      return Err(AppError::Config(
+        "endpoint cannot be empty; expected \"port\" or \"host:port\"".to_string(),
+      ));
+    }
+
+    if let Ok(port) = trimmed.parse::<u16>() {
+      return Ok(Endpoint {
+        host: "127.0.0.1".to_string(),
+        port,
+      });
+    }
+
+    if let Some(rest) = trimmed.strip_prefix('[') {
+      let (host, port_str) = rest.split_once("]:").ok_or_else(|| {
+        AppError::Config(format!(
+          "invalid endpoint '{}': bracketed IPv6 must be in \"[addr]:port\" form",
+          s
+        ))
+      })?;
+      if host.is_empty() {
+        return Err(AppError::Config(format!(
+          "invalid endpoint '{}': empty IPv6 host",
+          s
+        )));
+      }
+      let port = port_str
+        .parse::<u16>()
+        .map_err(|e| AppError::Config(format!("invalid endpoint '{}': bad port: {}", s, e)))?;
+      return Ok(Endpoint {
+        host: host.to_string(),
+        port,
+      });
+    }
+
+    // rsplit so bare IPv6 (ambiguous) is forced into the [] branch above.
+    let (host, port_str) = trimmed.rsplit_once(':').ok_or_else(|| {
+      AppError::Config(format!(
+        "invalid endpoint '{}': expected \"port\" or \"host:port\"",
+        s
+      ))
+    })?;
+    if host.is_empty() {
+      return Err(AppError::Config(format!(
+        "invalid endpoint '{}': host cannot be empty",
+        s
+      )));
+    }
+    let port = port_str
+      .parse::<u16>()
+      .map_err(|e| AppError::Config(format!("invalid endpoint '{}': bad port: {}", s, e)))?;
+    Ok(Endpoint {
+      host: host.to_string(),
+      port,
+    })
+  }
+}
+
+impl<'de> Deserialize<'de> for Endpoint {
+  fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+  where
+    D: Deserializer<'de>,
+  {
+    let s = String::deserialize(deserializer)?;
+    Endpoint::parse(&s).map_err(serde::de::Error::custom)
+  }
+}
+
+impl Serialize for Endpoint {
+  fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+  where
+    S: Serializer,
+  {
+    serializer.serialize_str(&format!("{}:{}", self.host, self.port))
+  }
+}
+
+/// Channel definition referencing an SSH config Host alias.
+///
+/// `local` / `remote` always name the address on that side; `direction` picks
+/// which side listens:
+/// - `local->remote` (ssh -L): listen on `local`, forward to `remote`.
+/// - `remote->local` (ssh -R): server binds `remote`, bridge to `local` here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConnectionConfig {
-  /// Channel name/identifier
   pub name: String,
-  /// SSH config Host alias (must match a `Host <alias>` block in ~/.ssh/config)
+  /// SSH config Host alias (the `<alias>` in a `Host <alias>` block).
   pub hostname: String,
-  /// Channel type: "direct-tcpip" (local forward, like ssh -L) or "forwarded-tcpip" (remote forward, like ssh -R).
-  /// Default: "direct-tcpip"
-  #[serde(default)]
-  pub channel_type: Option<String>,
-  /// Port forwarding configuration.
-  /// For direct-tcpip: "local:dest" (local listen port : remote dest port). Example: "80:3923"
-  /// For forwarded-tcpip: "remote:local" (remote bind port : local connect port). Example: "8022:80"
-  pub ports: PortForward,
-  /// For direct-tcpip: destination host on remote (defaults to 127.0.0.1).
-  /// For forwarded-tcpip: local host to connect to (defaults to 127.0.0.1).
-  #[serde(default = "default_destination_host")]
-  pub dest_host: String,
-  /// Local listen address for direct-tcpip (defaults to 127.0.0.1).
-  /// Use "0.0.0.0" to accept connections from any interface.
-  /// Ignored for forwarded-tcpip.
-  #[serde(default = "default_listen_host")]
-  pub listen_host: String,
-}
-
-fn default_listen_host() -> String {
-  "127.0.0.1".to_string()
-}
-
-fn default_destination_host() -> String {
-  "127.0.0.1".to_string()
+  pub direction: Direction,
+  pub local: Endpoint,
+  pub remote: Endpoint,
 }
 
 /// SSH channel configuration (runtime — built by combining configs.toml + ~/.ssh/config)
@@ -120,16 +167,11 @@ pub struct ChannelConfig {
   pub port: u16,
   /// SSH username (resolved from SSH config User)
   pub username: String,
-  /// Authentication method
   pub auth: AuthConfig,
-  /// Channel type string for logging and status display (e.g. "direct-tcpip", "forwarded-tcpip")
-  #[allow(dead_code)]
-  pub channel_type: String,
-  /// Parameters specific to the channel type; semantics are explicit per variant
   pub params: ChannelTypeParams,
 }
 
-/// Parameters for each channel type. Makes intent explicit and type-safe.
+/// Parameters for each underlying SSH channel type. Names mirror RFC 4254.
 #[derive(Debug, Clone)]
 pub enum ChannelTypeParams {
   /// Local port forwarding (ssh -L): listen locally, forward to remote dest.
@@ -141,11 +183,13 @@ pub enum ChannelTypeParams {
   },
   /// Remote port forwarding (ssh -R): server binds port, we connect to local and bridge.
   ForwardedTcpIp {
+    remote_bind_host: String,
     remote_bind_port: u16,
     local_connect_host: String,
     local_connect_port: u16,
   },
   /// Session channel (e.g. shell or single command).
+  #[allow(dead_code)]
   Session { command: Option<String> },
 }
 
@@ -250,6 +294,16 @@ impl Default for ReconnectionConfig {
   }
 }
 
+impl ConnectionConfig {
+  /// Port opened on this machine, or `None` when the bind happens on the server.
+  pub fn local_listen_port(&self) -> Option<u16> {
+    match self.direction {
+      Direction::LocalToRemote => Some(self.local.port),
+      Direction::RemoteToLocal => None,
+    }
+  }
+}
+
 impl AppConfig {
   /// Load configuration from a TOML file
   pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self> {
@@ -345,47 +399,19 @@ impl AppConfig {
       let override_ = self.auth.get(&conn.hostname);
       let auth = resolve_auth(&conn.hostname, entry, override_)?;
 
-      let channel_type = conn
-        .channel_type
-        .as_deref()
-        .unwrap_or("direct-tcpip")
-        .to_string();
-
-      let params = match channel_type.as_str() {
-        "forwarded-tcpip" => {
-          let local_connect_port = conn.ports.local_port.ok_or_else(|| {
-            AppError::Config(format!(
-              "Channel '{}': forwarded-tcpip requires ports local:remote (e.g. 80:8022)",
-              conn.name
-            ))
-          })?;
-          ChannelTypeParams::ForwardedTcpIp {
-            remote_bind_port: conn.ports.dest_port,
-            local_connect_host: conn.dest_host.clone(),
-            local_connect_port,
-          }
-        }
-        "session" => ChannelTypeParams::Session { command: None },
-        "direct-tcpip" => {
-          let local_port = conn.ports.local_port.ok_or_else(|| {
-            AppError::Config(format!(
-              "Channel '{}': direct-tcpip requires ports local:remote (e.g. 8080:80)",
-              conn.name
-            ))
-          })?;
-          ChannelTypeParams::DirectTcpIp {
-            listen_host: conn.listen_host.clone(),
-            local_port,
-            dest_host: conn.dest_host.clone(),
-            dest_port: conn.ports.dest_port,
-          }
-        }
-        unknown => {
-          return Err(AppError::Config(format!(
-            "Channel '{}': unknown channel_type '{}', expected 'direct-tcpip', 'forwarded-tcpip', or 'session'",
-            conn.name, unknown
-          )));
-        }
+      let params = match conn.direction {
+        Direction::LocalToRemote => ChannelTypeParams::DirectTcpIp {
+          listen_host: conn.local.host.clone(),
+          local_port: conn.local.port,
+          dest_host: conn.remote.host.clone(),
+          dest_port: conn.remote.port,
+        },
+        Direction::RemoteToLocal => ChannelTypeParams::ForwardedTcpIp {
+          remote_bind_host: conn.remote.host.clone(),
+          remote_bind_port: conn.remote.port,
+          local_connect_host: conn.local.host.clone(),
+          local_connect_port: conn.local.port,
+        },
       };
 
       channels.push(ChannelConfig {
@@ -394,7 +420,6 @@ impl AppConfig {
         port,
         username,
         auth,
-        channel_type,
         params,
       });
     }
@@ -416,14 +441,17 @@ impl AppConfig {
       out.push_str("# Add at least one with HostName and User, then re-run `generate`.\n\n");
     } else {
       out.push_str("# --- Channel templates ---\n");
-      out.push_str("# Uncomment the channels you want and fill in LOCAL:DEST ports.\n\n");
+      out.push_str("# direction: \"local->remote\" (ssh -L) or \"remote->local\" (ssh -R).\n");
+      out.push_str("# local / remote: \"host:port\" (host defaults to 127.0.0.1 if omitted).\n\n");
       for entry in entries {
         let target = entry.hostname.as_deref().unwrap_or("?");
         out.push_str(&format!("# Host alias: {} ({})\n", entry.host, target));
         out.push_str("# [[channels]]\n");
-        out.push_str(&format!("# name = \"{}-tunnel\"\n", entry.host));
-        out.push_str(&format!("# hostname = \"{}\"\n", entry.host));
-        out.push_str("# ports = \"LOCAL:DEST\"   # e.g. \"8080:80\"\n\n");
+        out.push_str(&format!("# name      = \"{}-tunnel\"\n", entry.host));
+        out.push_str(&format!("# hostname  = \"{}\"\n", entry.host));
+        out.push_str("# direction = \"local->remote\"\n");
+        out.push_str("# local     = \"LOCAL_PORT\"        # e.g. \"8080\" or \"127.0.0.1:8080\"\n");
+        out.push_str("# remote    = \"REMOTE_PORT\"       # e.g. \"80\" or \"127.0.0.1:80\"\n\n");
       }
 
       let needs_auth: Vec<&ssh_config::SshConfigEntry> = entries
@@ -484,4 +512,103 @@ fn resolve_auth(
      in configs.toml — provide one or the other",
     alias, alias
   )))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn endpoint_parses_bare_port() {
+    let ep = Endpoint::parse("3306").unwrap();
+    assert_eq!(ep.host, "127.0.0.1");
+    assert_eq!(ep.port, 3306);
+  }
+
+  #[test]
+  fn endpoint_parses_host_port() {
+    let ep = Endpoint::parse("0.0.0.0:8022").unwrap();
+    assert_eq!(ep.host, "0.0.0.0");
+    assert_eq!(ep.port, 8022);
+  }
+
+  #[test]
+  fn endpoint_parses_hostname() {
+    let ep = Endpoint::parse("db.internal:5432").unwrap();
+    assert_eq!(ep.host, "db.internal");
+    assert_eq!(ep.port, 5432);
+  }
+
+  #[test]
+  fn endpoint_parses_bracketed_ipv6() {
+    let ep = Endpoint::parse("[::1]:3306").unwrap();
+    assert_eq!(ep.host, "::1");
+    assert_eq!(ep.port, 3306);
+  }
+
+  #[test]
+  fn endpoint_rejects_empty() {
+    assert!(Endpoint::parse("").is_err());
+    assert!(Endpoint::parse("   ").is_err());
+  }
+
+  #[test]
+  fn endpoint_rejects_missing_port() {
+    assert!(Endpoint::parse("127.0.0.1:").is_err());
+  }
+
+  #[test]
+  fn endpoint_rejects_missing_host() {
+    assert!(Endpoint::parse(":3306").is_err());
+  }
+
+  #[test]
+  fn endpoint_rejects_out_of_range_port() {
+    assert!(Endpoint::parse("70000").is_err());
+    assert!(Endpoint::parse("127.0.0.1:70000").is_err());
+  }
+
+  #[test]
+  fn endpoint_rejects_garbage() {
+    assert!(Endpoint::parse("not-a-port").is_err());
+  }
+
+  #[derive(Debug, Deserialize)]
+  struct DirWrap {
+    v: Direction,
+  }
+
+  #[derive(Debug, Deserialize, Serialize)]
+  struct EpWrap {
+    v: Endpoint,
+  }
+
+  #[test]
+  fn direction_deserializes_both_arrows() {
+    let l2r: DirWrap = toml::from_str(r#"v = "local->remote""#).unwrap();
+    assert_eq!(l2r.v, Direction::LocalToRemote);
+
+    let r2l: DirWrap = toml::from_str(r#"v = "remote->local""#).unwrap();
+    assert_eq!(r2l.v, Direction::RemoteToLocal);
+  }
+
+  #[test]
+  fn direction_rejects_invalid_value() {
+    let err = toml::from_str::<DirWrap>(r#"v = "bogus""#).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+      msg.contains("local->remote") && msg.contains("remote->local"),
+      "error should list valid options, got: {msg}"
+    );
+  }
+
+  #[test]
+  fn endpoint_round_trips_through_toml() {
+    let parsed: EpWrap = toml::from_str(r#"v = "0.0.0.0:8022""#).unwrap();
+    assert_eq!(parsed.v.host, "0.0.0.0");
+    assert_eq!(parsed.v.port, 8022);
+
+    let rendered = toml::to_string(&parsed).unwrap();
+    assert!(rendered.contains("\"0.0.0.0:8022\""), "got: {rendered}");
+  }
 }

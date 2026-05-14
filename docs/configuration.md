@@ -22,9 +22,11 @@ SSH Channels Hub 把 host 信息(`HostName` / `User` / `Port` / `IdentityFile`)�
 
 # Channel 定义(端口转发)
 [[channels]]
-name = "db-tunnel"
-hostname = "my-server"        # ← SSH config 里 `Host my-server` 的别名
-ports = "3306:3306"
+name      = "db-tunnel"
+hostname  = "my-server"           # ← SSH config 里 `Host my-server` 的别名
+direction = "local->remote"       # 或 "remote->local"
+local     = "3306"                # 本机这一侧的地址,bare port → 127.0.0.1:3306
+remote    = "3306"                # 远端这一侧的地址
 
 # 可选:为某个 alias 提供密码 / passphrase(SSH config 存不了)
 [auth.my-server]
@@ -55,15 +57,26 @@ use_exponential_backoff = true
 |---|---|---|---|
 | `name` | string | ✅ | channel 唯一标识 |
 | `hostname` | string | ✅ | SSH config 中的 `Host <alias>` 别名 |
-| `ports` | string | ✅ | 端口转发,格式 `"LOCAL:DEST"`,详见下文 |
-| `channel_type` | string | ❌ | `"direct-tcpip"`(默认) / `"forwarded-tcpip"` |
-| `dest_host` | string | ❌ | 默认 `127.0.0.1`,语义随 `channel_type` 变化 |
-| `listen_host` | string | ❌ | 默认 `127.0.0.1`,仅 `direct-tcpip` 有效;`"0.0.0.0"` 接受所有网卡 |
+| `direction` | string | ✅ | `"local->remote"`(ssh -L) 或 `"remote->local"`(ssh -R) |
+| `local` | string | ✅ | 本机这一侧的地址,见下文「Endpoint 格式」 |
+| `remote` | string | ✅ | 远端这一侧的地址 |
 
-**`channel_type` 语义**:
+**字段语义恒定**:`local` 永远表示本机这一侧、`remote` 永远表示 SSH 服务器这一侧 —— 与 `direction` 无关。变动的只是「谁监听 / 谁连接」:
 
-- `direct-tcpip`(类 `ssh -L`):`ports = "LOCAL:DEST"`。流量:本地 `listen_host:LOCAL` → SSH 隧道 → 远程 `dest_host:DEST`。
-- `forwarded-tcpip`(类 `ssh -R`):`ports = "LOCAL:DEST"`。流量:远程服务器 `DEST` 端口 → SSH 隧道 → 本机 `dest_host:LOCAL`。
+- `direction = "local->remote"`:本机监听 `local`,新连接通过隧道在服务器端打开到 `remote` 的 TCP。流量方向 `本机 local → 服务器 → 远端 remote`。
+- `direction = "remote->local"`:服务器在 `remote` 绑定监听,收到连接后桥接到本机 `local`。流量方向 `远端 remote → 服务器 → 本机 local`。
+
+**Endpoint 格式**(`local` / `remote` 都按这个解析):
+
+| 写法 | 解析为 |
+|---|---|
+| `"3306"` | `127.0.0.1:3306` |
+| `"127.0.0.1:3306"` | `127.0.0.1:3306` |
+| `"0.0.0.0:8080"` | `0.0.0.0:8080`(本侧多网卡;远端配合服务器 `GatewayPorts` 时全网可达) |
+| `"db.internal:5432"` | `db.internal:5432`(主机名) |
+| `"[::1]:3306"` | `::1:3306`(IPv6 用方括号) |
+
+未识别的字段会直接报错(`deny_unknown_fields`),不会被静默忽略。
 
 ### 3.3 `[auth.<alias>]`
 
@@ -118,9 +131,11 @@ Host prod-db
 `configs.toml`:
 ```toml
 [[channels]]
-name = "db-tunnel"
-hostname = "prod-db"
-ports = "3306:3306"
+name      = "db-tunnel"
+hostname  = "prod-db"
+direction = "local->remote"
+local     = "3306"
+remote    = "3306"
 ```
 
 不需要 `[auth.prod-db]`。
@@ -138,9 +153,11 @@ Host jumpbox
 `configs.toml`:
 ```toml
 [[channels]]
-name = "jumpbox-web"
-hostname = "jumpbox"
-ports = "8080:80"
+name      = "jumpbox-web"
+hostname  = "jumpbox"
+direction = "local->remote"
+local     = "8080"
+remote    = "80"
 
 [auth.jumpbox]
 password = "your-password"
@@ -148,68 +165,76 @@ password = "your-password"
 
 ### 4.3 IdentityFile 有 passphrase
 
-`~/.ssh/config`:
-```
-Host backup
-  HostName backup.example.com
-  User backup
-  IdentityFile ~/.ssh/backup_key
-```
-
-`configs.toml`:
 ```toml
 [[channels]]
-name = "backup-tunnel"
-hostname = "backup"
-ports = "2222:22"
+name      = "backup-tunnel"
+hostname  = "backup"
+direction = "local->remote"
+local     = "2222"
+remote    = "22"
 
 [auth.backup]
 passphrase = "key-passphrase"
 ```
 
-### 4.4 多 channel 复用同一 alias
+### 4.4 暴露本机端口给服务器(remote->local / ssh -R)
 
 ```toml
 [[channels]]
-name = "db"
-hostname = "prod-server"
-ports = "3306:3306"
+name      = "expose-local-web"
+hostname  = "jumpbox"
+direction = "remote->local"
+remote    = "8022"           # 服务器在 127.0.0.1:8022 监听
+local     = "80"             # 收到连接桥接到本机 127.0.0.1:80
+```
+
+要让服务器在 `0.0.0.0:8022` 上监听(让其它机器也能连),把 `remote` 改成 `"0.0.0.0:8022"`,**并且**服务器 `/etc/ssh/sshd_config` 里必须开 `GatewayPorts yes`(或 `clientspecified`)。
+
+### 4.5 监听到所有网卡
+
+```toml
+[[channels]]
+name      = "shared-db"
+hostname  = "prod-db"
+direction = "local->remote"
+local     = "0.0.0.0:3306"   # 本机所有网卡都接受连接
+remote    = "3306"
+```
+
+### 4.6 多 channel 复用同一 alias
+
+```toml
+[[channels]]
+name      = "db"
+hostname  = "prod-server"
+direction = "local->remote"
+local     = "3306"
+remote    = "3306"
 
 [[channels]]
-name = "redis"
-hostname = "prod-server"
-ports = "6379:6379"
+name      = "redis"
+hostname  = "prod-server"
+direction = "local->remote"
+local     = "6379"
+remote    = "6379"
 
 [[channels]]
-name = "web"
-hostname = "prod-server"
-ports = "8080:80"
+name      = "web"
+hostname  = "prod-server"
+direction = "local->remote"
+local     = "8080"
+remote    = "80"
 ```
 
 三个 channel 共用同一 SSH 连接的 host info(底层每个 channel 仍各自建一条 SSH session,详见 [architecture.md](./architecture.md))。
 
-### 4.5 远程转发(forwarded-tcpip)
-
-将本机 80 端口暴露到服务器的 8022:
-
-```toml
-[[channels]]
-name = "expose-local-web"
-channel_type = "forwarded-tcpip"
-hostname = "jumpbox"
-ports = "80:8022"             # 本机要连接的端口 : 服务器要绑定的端口
-dest_host = "127.0.0.1"
-```
-
-启动后,工具向服务器发 `tcpip-forward` 在服务器上绑定 8022;有人连接「服务器:8022」时,流量经 SSH 隧道转发到本机 `127.0.0.1:80`。
-
-### 4.6 用 `generate` 生成脚手架
+### 4.7 用 `generate` 生成脚手架
 
 ```bash
 ssh-channels-hub generate -o configs.toml
 ```
 
-工具扫一遍 `~/.ssh/config`,为每个 alias 输出**注释掉的** `[[channels]]` 模板。取消注释、填上 `LOCAL:DEST` 即可。无 `IdentityFile` 的 host 同时会附上 `[auth.<alias>]` 模板。
+工具扫一遍 `~/.ssh/config`,为每个 alias 输出**注释掉的** `[[channels]]` 模板。取消注释、填上 `local` / `remote` 端口即可。无 `IdentityFile` 的 host 同时会附上 `[auth.<alias>]` 模板。
 
 ## 5. 配置验证
 
@@ -223,7 +248,8 @@ ssh-channels-hub validate --config /path/to/configs.toml
 - 每个 `channels[].hostname` 在 SSH config 里存在
 - 该 alias 有 `HostName` 和 `User`
 - 该 alias 有 `IdentityFile` 或 `[auth.<alias>].password` 二选一
-- channel 的 `ports` 格式合法
+- `direction` 取值合法
+- `local` / `remote` 是合法的 `port` 或 `host:port`
 
 输出会列出每个 channel 解析后的 `user@host:port` + 转发参数。
 
@@ -240,6 +266,10 @@ alias 的 `Host` 块里缺 `HostName` 或 `User`。补上即可。`User` 可以�
 ### `Host 'X' has no IdentityFile in SSH config and no [auth.X].password in configs.toml`
 
 二选一:在 `~/.ssh/config` 给该 host 加 `IdentityFile`,或在 `configs.toml` 加 `[auth.X] password = "..."`。
+
+### `invalid direction '...', expected "local->remote" or "remote->local"`
+
+`direction` 只接受这两个字符串。注意是带箭头的 ASCII (`->`),不是中文箭头或单破折号。
 
 ### `Failed to read SSH config at <path>`
 

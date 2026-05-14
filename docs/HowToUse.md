@@ -32,19 +32,22 @@ Host remote-server
 
 ```toml
 [[channels]]
-name = "web-service-tunnel"
-hostname = "remote-server"  # ← 对应 ~/.ssh/config 里的 `Host remote-server`
-ports = "18080:8080"        # 本地端口:远程端口
-# dest_host = "127.0.0.1"   # 可选,默认 127.0.0.1
+name      = "web-service-tunnel"
+hostname  = "remote-server"     # ← 对应 ~/.ssh/config 里的 `Host remote-server`
+direction = "local->remote"
+local     = "18080"
+remote    = "8080"
 ```
 
 完整最小配置:
 
 ```toml
 [[channels]]
-name = "web-service-tunnel"
-hostname = "remote-server"
-ports = "18080:8080"
+name      = "web-service-tunnel"
+hostname  = "remote-server"
+direction = "local->remote"
+local     = "18080"
+remote    = "8080"
 
 [reconnection]
 max_retries = 0
@@ -90,11 +93,11 @@ passphrase = "your-key-passphrase"
 
 ```toml
 [[channels]]
-name = "expose-local-web"
-channel_type = "forwarded-tcpip"
-hostname = "remote-server"  # ~/.ssh/config 里的别名
-ports = "80:8022"           # 本机端口:服务器绑定端口
-# dest_host = "127.0.0.1"   # 可选,本机要连接到的地址,默认 127.0.0.1
+name      = "expose-local-web"
+hostname  = "remote-server"     # ~/.ssh/config 里的别名
+direction = "remote->local"
+remote    = "8022"              # 服务器在 127.0.0.1:8022 绑定监听
+local     = "80"                # 收到连接桥接到本机 127.0.0.1:80
 ```
 
 启动后:
@@ -122,9 +125,11 @@ Host db-server
 `configs.toml`:
 ```toml
 [[channels]]
-name = "mysql-tunnel"
-hostname = "db-server"
-ports = "3306:3306"
+name      = "mysql-tunnel"
+hostname  = "db-server"
+direction = "local->remote"
+local     = "3306"
+remote    = "3306"
 ```
 
 之后 `mysql -h 127.0.0.1 -P 3306` 即连到远程 MySQL。
@@ -142,9 +147,11 @@ Host web-server
 `configs.toml`:
 ```toml
 [[channels]]
-name = "web-tunnel"
-hostname = "web-server"
-ports = "8080:80"
+name      = "web-tunnel"
+hostname  = "web-server"
+direction = "local->remote"
+local     = "8080"
+remote    = "80"
 ```
 
 浏览器访问 `http://localhost:8080`。
@@ -161,9 +168,11 @@ Host redis-server
 `configs.toml`:
 ```toml
 [[channels]]
-name = "redis-tunnel"
-hostname = "redis-server"
-ports = "6379:6379"
+name      = "redis-tunnel"
+hostname  = "redis-server"
+direction = "local->remote"
+local     = "6379"
+remote    = "6379"
 
 [auth.redis-server]
 password = "your-password"
@@ -173,10 +182,11 @@ password = "your-password"
 
 ```toml
 [[channels]]
-name = "shared-tunnel"
-hostname = "remote-server"
-ports = "8080:80"
-listen_host = "0.0.0.0"     # 默认 127.0.0.1;设为 0.0.0.0 后局域网可访问
+name      = "shared-tunnel"
+hostname  = "remote-server"
+direction = "local->remote"
+local     = "0.0.0.0:8080"      # 本机所有网卡都接受连接(默认 127.0.0.1)
+remote    = "80"
 ```
 
 注意防火墙与安全风险。
@@ -189,19 +199,25 @@ listen_host = "0.0.0.0"     # 默认 127.0.0.1;设为 0.0.0.0 后局域网可访
 # ~/.ssh/config 里已配好 server1 / server2
 
 [[channels]]
-name = "db-tunnel"
-hostname = "server1"
-ports = "3306:3306"
+name      = "db-tunnel"
+hostname  = "server1"
+direction = "local->remote"
+local     = "3306"
+remote    = "3306"
 
 [[channels]]
-name = "web-tunnel"
-hostname = "server2"
-ports = "8080:80"
+name      = "web-tunnel"
+hostname  = "server2"
+direction = "local->remote"
+local     = "8080"
+remote    = "80"
 
 [[channels]]
-name = "redis-tunnel"
-hostname = "server1"        # 多个 channel 可复用同一 alias
-ports = "6379:6379"
+name      = "redis-tunnel"
+hostname  = "server1"           # 多个 channel 可复用同一 alias
+direction = "local->remote"
+local     = "6379"
+remote    = "6379"
 
 # server2 是密码登录
 [auth.server2]
@@ -266,7 +282,7 @@ ssh-channels-hub validate --debug
 
 1. 在远程服务器上验证目标服务存在:`curl http://127.0.0.1:8080`
 2. `ssh-channels-hub start --debug` 看 SSH 握手与 channel 建立日志
-3. 远程转发(`forwarded-tcpip`)无法用 `test` 命令验证,需在服务器端实际连接
+3. 远程转发(`direction = "remote->local"`)无法用 `test` 命令验证,需在服务器端实际连接
 
 ---
 

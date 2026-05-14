@@ -411,45 +411,23 @@ async fn handle_restart(config_path: std::path::PathBuf, debug: bool) -> AnyhowR
   Ok(())
 }
 
-/// Print channel list from config (name, local -> dest or remote -> local).
+/// Print channel list from config: one line per channel, arrow shows direction.
 fn print_channel_list(channels: &[config::ConnectionConfig]) {
   if channels.is_empty() {
     return;
   }
   println!("  Channels:");
   for c in channels {
-    let is_remote = c
-      .channel_type
-      .as_deref()
-      .map(|t| t == "forwarded-tcpip")
-      .unwrap_or(false);
-    if is_remote {
-      // forwarded-tcpip: ports = "local:remote" -> remote bind port = dest_port, local connect = dest_host:local_port
-      let remote = c.ports.dest_port.to_string();
-      let local_dest = format!(
-        "{}:{}",
-        c.dest_host,
-        c.ports
-          .local_port
-          .map(|p| p.to_string())
-          .unwrap_or_else(|| "?".to_string())
-      );
-      println!(
-        "    - {} \tremote {:>5} -> local {} (host: {})",
-        c.name, remote, local_dest, c.hostname
-      );
-    } else {
-      let local = c
-        .ports
-        .local_port
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| "?".to_string());
-      let dest = format!("{}:{}", c.dest_host, c.ports.dest_port);
-      println!(
-        "    - {} \tlisten {:>5} -> {} (host: {})",
-        c.name, local, dest, c.hostname
-      );
-    }
+    let local = format!("{}:{}", c.local.host, c.local.port);
+    let remote = format!("{}:{}", c.remote.host, c.remote.port);
+    let arrow = match c.direction {
+      config::Direction::LocalToRemote => "->",
+      config::Direction::RemoteToLocal => "<-",
+    };
+    println!(
+      "    - {} \tlocal {} {} remote {} (host: {})",
+      c.name, local, arrow, remote, c.hostname
+    );
   }
 }
 
@@ -548,16 +526,17 @@ async fn handle_validate(config_path: Option<std::path::PathBuf>) -> AnyhowResul
         dest_host,
         dest_port,
       } => format!(
-        "direct-tcpip {}:{} -> {}:{}",
+        "local->remote (listen {}:{} -> {}:{})",
         listen_host, local_port, dest_host, dest_port
       ),
       config::ChannelTypeParams::ForwardedTcpIp {
+        remote_bind_host,
         remote_bind_port,
         local_connect_host,
         local_connect_port,
       } => format!(
-        "forwarded-tcpip server:{} -> {}:{}",
-        remote_bind_port, local_connect_host, local_connect_port
+        "remote->local (bind {}:{} -> local {}:{})",
+        remote_bind_host, remote_bind_port, local_connect_host, local_connect_port
       ),
       config::ChannelTypeParams::Session { .. } => "session".to_string(),
     };
@@ -626,7 +605,7 @@ async fn handle_generate(
   }
 
   println!("\n💡 All channel entries are commented out. Uncomment the ones you want");
-  println!("   and replace LOCAL:DEST with concrete port numbers.");
+  println!("   and replace LOCAL_PORT / REMOTE_PORT with concrete ports (or host:port).");
 
   Ok(())
 }
@@ -647,29 +626,23 @@ async fn handle_test(config_path: std::path::PathBuf) -> AnyhowResult<()> {
   let mut all_passed = true;
 
   for conn in &config.channels {
-    let is_remote = conn
-      .channel_type
-      .as_deref()
-      .map(|t| t == "forwarded-tcpip")
-      .unwrap_or(false);
-
-    if is_remote {
-      print!("Channel '{}' (remote forward)... ", conn.name);
+    if conn.direction == config::Direction::RemoteToLocal {
+      print!("Channel '{}' (remote->local)... ", conn.name);
       println!("skipped (test connects to local listener; use remote port on server to verify)");
       continue;
     }
 
-    let local_port = conn.ports.local_port.expect("local_port must be set");
-    let dest_port = conn.ports.dest_port;
-    let dest_host = &conn.dest_host;
+    let local_host = conn.local.host.as_str();
+    let local_port = conn.local.port;
+    let remote_addr = format!("{}:{}", conn.remote.host, conn.remote.port);
 
     print!(
-      "Testing channel '{}' (local:{} -> {}:{})... ",
-      conn.name, local_port, dest_host, dest_port
+      "Testing channel '{}' ({}:{} -> {})... ",
+      conn.name, local_host, local_port, remote_addr
     );
 
     // First check if port is listening
-    match test_port_connection("127.0.0.1", local_port).await {
+    match test_port_connection(local_host, local_port).await {
       Ok(false) => {
         println!("✗ Port not listening");
         all_passed = false;
@@ -682,7 +655,7 @@ async fn handle_test(config_path: std::path::PathBuf) -> AnyhowResult<()> {
       }
       Ok(true) => {
         // Port is listening, now test if tunnel is actually working
-        match test_tunnel_connection("127.0.0.1", local_port).await {
+        match test_tunnel_connection(local_host, local_port).await {
           Ok(true) => {
             println!("✓ Tunnel working");
           }

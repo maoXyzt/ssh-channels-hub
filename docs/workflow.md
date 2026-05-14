@@ -91,7 +91,7 @@
    ├── 服务状态（含 emoji）
    ├── 活动/总 channels 数
    ├── 配置文件路径、PID
-   └── 已配置 channel 列表（name, local_port -> dest_host:dest_port）
+   └── 已配置 channel 列表（name, direction, local <-> remote）
    ↓
 4. 若 .port 不存在或连接失败，显示 "Stopped" 及配置路径
 ```
@@ -158,7 +158,7 @@
 #### Direct-TCPIP channel
 
 ```
-1. 在本地绑定 TcpListener（listen_host:local_port）
+1. 在本地绑定 TcpListener（local.host:local.port）
    ↓
 2. 循环 accept 新连接
    ↓

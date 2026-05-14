@@ -222,6 +222,7 @@ impl SshManager {
 /// Run remote port forwarding (ssh -R style): ask server to bind a port, bridge incoming connections to local.
 async fn run_forwarded_tcpip(config: &ChannelConfig, cancel: CancellationToken) -> Result<()> {
   let ChannelTypeParams::ForwardedTcpIp {
+    remote_bind_host,
     remote_bind_port,
     local_connect_host,
     local_connect_port,
@@ -240,10 +241,14 @@ async fn run_forwarded_tcpip(config: &ChannelConfig, cancel: CancellationToken) 
 
   let mut session = connect_and_authenticate(config, handler).await?;
 
-  info!(channel = %config.name, "Requesting remote port forward (tcpip-forward)");
+  info!(
+      channel = %config.name,
+      remote_bind = %format!("{}:{}", remote_bind_host, remote_bind_port),
+      "Requesting remote port forward (tcpip-forward)"
+  );
 
   let bound_port = session
-    .tcpip_forward("", *remote_bind_port as u32)
+    .tcpip_forward(remote_bind_host.as_str(), *remote_bind_port as u32)
     .await
     .map_err(|e| AppError::SshChannel(format!("tcpip-forward failed: {}", e)))?;
 
@@ -255,7 +260,7 @@ async fn run_forwarded_tcpip(config: &ChannelConfig, cancel: CancellationToken) 
 
   info!(
       channel = %config.name,
-      remote_port = actual_port,
+      remote = %format!("{}:{}", remote_bind_host, actual_port),
       local = %format!("{}:{}", local_connect_host, local_connect_port),
       "Remote forward active (incoming connections will be bridged to local)"
   );
