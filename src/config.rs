@@ -1,26 +1,8 @@
 use crate::error::{AppError, Result};
+use crate::ssh_config;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::collections::HashMap;
 use std::path::PathBuf;
-
-/// SSH host definition (previously channel definition)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HostConfig {
-  /// Host name/identifier (used by channels to reference)
-  pub name: String,
-  /// Remote host address
-  pub host: String,
-  /// SSH port (defaults to 22)
-  #[serde(default = "default_ssh_port")]
-  pub port: u16,
-  /// SSH username
-  pub username: String,
-  /// Authentication method
-  pub auth: AuthConfig,
-}
-
-fn default_ssh_port() -> u16 {
-  22
-}
 
 /// Port forwarding configuration (local:dest format)
 #[derive(Debug, Clone)]
@@ -93,12 +75,12 @@ impl Serialize for PortForward {
   }
 }
 
-/// Channel definition referencing a host
+/// Channel definition referencing an SSH config Host alias
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionConfig {
   /// Channel name/identifier
   pub name: String,
-  /// Host reference (must match hosts.name)
+  /// SSH config Host alias (must match a `Host <alias>` block in ~/.ssh/config)
   pub hostname: String,
   /// Channel type: "direct-tcpip" (local forward, like ssh -L) or "forwarded-tcpip" (remote forward, like ssh -R).
   /// Default: "direct-tcpip"
@@ -127,16 +109,16 @@ fn default_destination_host() -> String {
   "127.0.0.1".to_string()
 }
 
-/// SSH channel configuration (runtime)
+/// SSH channel configuration (runtime — built by combining configs.toml + ~/.ssh/config)
 #[derive(Debug, Clone)]
 pub struct ChannelConfig {
   /// Channel name/identifier
   pub name: String,
-  /// Remote host address
+  /// Remote host address (resolved from SSH config HostName)
   pub host: String,
-  /// SSH port (defaults to 22)
+  /// SSH port (resolved from SSH config Port, default 22)
   pub port: u16,
-  /// SSH username
+  /// SSH username (resolved from SSH config User)
   pub username: String,
   /// Authentication method
   pub auth: AuthConfig,
@@ -167,7 +149,7 @@ pub enum ChannelTypeParams {
   Session { command: Option<String> },
 }
 
-/// Authentication configuration
+/// Authentication configuration (runtime — used by SSH layer)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AuthConfig {
@@ -184,14 +166,41 @@ pub enum AuthConfig {
   },
 }
 
+/// Per-host credential override.
+///
+/// SSH config (`~/.ssh/config`) cannot store secrets — Password / IdentityFile passphrase
+/// live here. Both fields are optional; provide whichever applies for the host.
+///
+/// Resolution rules (see `AppConfig::build_channels`):
+/// - If `password` is set, password auth is used regardless of any IdentityFile in SSH config.
+/// - Otherwise the host's IdentityFile is required, and `passphrase` is attached to it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthOverride {
+  #[serde(default)]
+  pub password: Option<String>,
+  #[serde(default)]
+  pub passphrase: Option<String>,
+}
+
 /// Application configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Host info (HostName / User / Port / IdentityFile) lives in `~/.ssh/config`.
+/// This file defines:
+/// - which channels to bring up (`[[channels]]`, referencing SSH config aliases)
+/// - per-host credentials SSH config can't hold (`[auth.<alias>]`)
+/// - reconnection policy
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
-  /// SSH hosts definition (replaces channels)
-  pub hosts: Vec<HostConfig>,
-  /// Channels referencing hosts
+  /// Optional override for the SSH config file path. None → `~/.ssh/config`.
+  #[serde(default)]
+  pub ssh_config: Option<PathBuf>,
+  /// Channels referencing SSH config Host aliases
   #[serde(default)]
   pub channels: Vec<ConnectionConfig>,
+  /// Per-host credential overrides keyed by SSH config Host alias.
+  /// Only required when SSH config alone can't authenticate (password, key with passphrase).
+  #[serde(default)]
+  pub auth: HashMap<String, AuthOverride>,
   /// Reconnection settings
   #[serde(default)]
   pub reconnection: ReconnectionConfig,
@@ -279,68 +288,62 @@ impl AppConfig {
       .unwrap_or_else(|| PathBuf::from("configs.toml"))
   }
 
-  /// Generate configuration from SSH config entries
-  pub fn from_ssh_config_entries(entries: Vec<crate::ssh_config::SshConfigEntry>) -> Self {
-    let mut hosts = Vec::new();
-
-    for entry in entries.into_iter() {
-      // Skip entries without required fields
-      let hostname = match entry.hostname {
-        Some(h) => h,
-        None => continue,
-      };
-      let username = match entry.user {
-        Some(u) => u,
-        None => continue,
-      };
-
-      // Determine authentication method
-      let auth = if let Some(key_path) = entry.identity_file {
-        AuthConfig::Key {
-          key_path,
-          passphrase: None, // Passphrase not available from SSH config
-        }
-      } else {
-        // If no identity file, we'll use password auth as placeholder
-        // User will need to fill in the password manually
-        AuthConfig::Password {
-          password: "CHANGE_ME".to_string(),
-        }
-      };
-
-      let host_cfg = HostConfig {
-        name: entry.host.clone(),
-        host: hostname,
-        port: entry.port.unwrap_or(22), // Use port from SSH config or default to 22
-        username,
-        auth,
-      };
-
-      hosts.push(host_cfg);
-    }
-
-    Self {
-      hosts,
-      channels: Vec::new(), // Generate command doesn't create channels
-      reconnection: ReconnectionConfig::default(),
-    }
+  /// Resolved SSH config path (override from configs.toml or platform default).
+  pub fn ssh_config_path(&self) -> PathBuf {
+    self
+      .ssh_config
+      .clone()
+      .unwrap_or_else(ssh_config::default_ssh_config_path)
   }
 
-  /// Build runtime channel configs by combining hosts and channels
+  /// Build runtime channel configs by resolving each `[[channels]]` entry against
+  /// the SSH config and applying any `[auth.<alias>]` overrides.
   pub fn build_channels(&self) -> Result<Vec<ChannelConfig>> {
-    let mut channels = Vec::new();
+    let ssh_config_path = self.ssh_config_path();
+    let entries = ssh_config::parse_ssh_config(&ssh_config_path).map_err(|e| {
+      AppError::Config(format!(
+        "Failed to read SSH config at {}: {}",
+        ssh_config_path.display(),
+        e
+      ))
+    })?;
 
+    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
+      entries.iter().map(|e| (e.host.as_str(), e)).collect();
+
+    let mut channels = Vec::new();
     for conn in &self.channels {
-      let host_cfg = self
-        .hosts
-        .iter()
-        .find(|h| h.name == conn.hostname)
+      let entry = by_alias
+        .get(conn.hostname.as_str())
+        .copied()
         .ok_or_else(|| {
           AppError::Config(format!(
-            "Channel '{}' references unknown host '{}'",
-            conn.name, conn.hostname
+            "Channel '{}' references host alias '{}', but no `Host {}` block exists in {}",
+            conn.name,
+            conn.hostname,
+            conn.hostname,
+            ssh_config_path.display()
           ))
         })?;
+
+      let host = entry.hostname.clone().ok_or_else(|| {
+        AppError::Config(format!(
+          "SSH config Host '{}' is missing `HostName`",
+          conn.hostname
+        ))
+      })?;
+
+      let username = entry.user.clone().ok_or_else(|| {
+        AppError::Config(format!(
+          "SSH config Host '{}' is missing `User`",
+          conn.hostname
+        ))
+      })?;
+
+      let port = entry.port.unwrap_or(22);
+
+      let override_ = self.auth.get(&conn.hostname);
+      let auth = resolve_auth(&conn.hostname, entry, override_)?;
 
       let channel_type = conn
         .channel_type
@@ -387,10 +390,10 @@ impl AppConfig {
 
       channels.push(ChannelConfig {
         name: conn.name.clone(),
-        host: host_cfg.host.clone(),
-        port: host_cfg.port,
-        username: host_cfg.username.clone(),
-        auth: host_cfg.auth.clone(),
+        host,
+        port,
+        username,
+        auth,
         channel_type,
         params,
       });
@@ -399,69 +402,86 @@ impl AppConfig {
     Ok(channels)
   }
 
-  /// Save configuration to a TOML file
-  pub fn to_file(&self, path: impl AsRef<std::path::Path>) -> Result<()> {
-    let content = toml::to_string_pretty(self)
-      .map_err(|e| AppError::Config(format!("Failed to serialize config: {}", e)))?;
+  /// Render a commented-out configs.toml scaffold from SSH config entries.
+  /// Used by the `generate` subcommand.
+  pub fn generate_scaffold(entries: &[ssh_config::SshConfigEntry]) -> String {
+    let mut out = String::new();
+    out.push_str("# SSH Channels Hub configuration\n");
+    out.push_str("# Host info (HostName / User / Port / IdentityFile) is read from\n");
+    out.push_str("# ~/.ssh/config. This file only defines channels and per-host\n");
+    out.push_str("# credentials that SSH config can't hold (passwords / passphrases).\n\n");
 
-    // Add comments before each [[hosts]] entry
-    let content_with_comments = self.add_host_comments(&content);
-
-    std::fs::write(path.as_ref(), content_with_comments)
-      .map_err(|e| AppError::Config(format!("Failed to write config file: {}", e)))?;
-
-    Ok(())
-  }
-
-  /// Add comments before each [[hosts]] entry
-  fn add_host_comments(&self, content: &str) -> String {
-    let mut result = String::new();
-    let lines: Vec<&str> = content.lines().collect();
-    let mut i = 0;
-
-    while i < lines.len() {
-      let line = lines[i];
-
-      // Check if this is a [[hosts]] line
-      if line.trim() == "[[hosts]]" {
-        // Find the corresponding host config to get its name
-        if let Some(host_idx) = self.find_host_index(&lines, i) {
-          let host = &self.hosts[host_idx];
-
-          // Check if there's already a blank line before this entry
-          let has_blank_before = i > 0 && lines[i - 1].trim().is_empty();
-
-          // Add a blank line if there isn't one already
-          if !has_blank_before && !result.trim().is_empty() {
-            result.push('\n');
-          }
-
-          // Add comment with host information
-          result.push_str(&format!("# Host: {} ({})\n", host.name, host.host));
-        }
+    if entries.is_empty() {
+      out.push_str("# No usable Host blocks were found in ~/.ssh/config.\n");
+      out.push_str("# Add at least one with HostName and User, then re-run `generate`.\n\n");
+    } else {
+      out.push_str("# --- Channel templates ---\n");
+      out.push_str("# Uncomment the channels you want and fill in LOCAL:DEST ports.\n\n");
+      for entry in entries {
+        let target = entry.hostname.as_deref().unwrap_or("?");
+        out.push_str(&format!("# Host alias: {} ({})\n", entry.host, target));
+        out.push_str("# [[channels]]\n");
+        out.push_str(&format!("# name = \"{}-tunnel\"\n", entry.host));
+        out.push_str(&format!("# hostname = \"{}\"\n", entry.host));
+        out.push_str("# ports = \"LOCAL:DEST\"   # e.g. \"8080:80\"\n\n");
       }
 
-      result.push_str(line);
-      result.push('\n');
-      i += 1;
+      let needs_auth: Vec<&ssh_config::SshConfigEntry> = entries
+        .iter()
+        .filter(|e| e.identity_file.is_none())
+        .collect();
+      if !needs_auth.is_empty() {
+        out.push_str("# --- Credentials for password-auth hosts ---\n");
+        out.push_str(
+          "# These hosts have no IdentityFile in ~/.ssh/config; provide a password here.\n\n",
+        );
+        for entry in &needs_auth {
+          out.push_str(&format!("# [auth.{}]\n", entry.host));
+          out.push_str("# password = \"...\"\n\n");
+        }
+      } else {
+        out.push_str("# --- Credential overrides (optional) ---\n");
+        out.push_str("# Add a [auth.<alias>] table only when the alias needs a password\n");
+        out.push_str("# or its IdentityFile is protected by a passphrase.\n");
+        out.push_str("# [auth.example-alias]\n");
+        out.push_str("# password = \"...\"\n");
+        out.push_str("# # or: passphrase = \"...\"\n\n");
+      }
     }
 
-    result
+    out.push_str("# --- Reconnection settings ---\n");
+    out.push_str("[reconnection]\n");
+    out.push_str("max_retries = 0\n");
+    out.push_str("initial_delay_secs = 1\n");
+    out.push_str("max_delay_secs = 30\n");
+    out.push_str("use_exponential_backoff = true\n");
+
+    out
+  }
+}
+
+fn resolve_auth(
+  alias: &str,
+  entry: &ssh_config::SshConfigEntry,
+  override_: Option<&AuthOverride>,
+) -> Result<AuthConfig> {
+  let password = override_.and_then(|o| o.password.clone());
+  let passphrase = override_.and_then(|o| o.passphrase.clone());
+
+  if let Some(password) = password {
+    return Ok(AuthConfig::Password { password });
   }
 
-  /// Find which host index corresponds to a [[hosts]] line at a given position
-  fn find_host_index(&self, lines: &[&str], start_pos: usize) -> Option<usize> {
-    // Count how many [[hosts]] entries appear before this position
-    let host_count = lines
-      .iter()
-      .take(start_pos)
-      .filter(|line| line.trim() == "[[hosts]]")
-      .count();
-
-    if host_count < self.hosts.len() {
-      Some(host_count)
-    } else {
-      None
-    }
+  if let Some(key_path) = entry.identity_file.clone() {
+    return Ok(AuthConfig::Key {
+      key_path,
+      passphrase,
+    });
   }
+
+  Err(AppError::Config(format!(
+    "Host '{}' has no `IdentityFile` in SSH config and no `[auth.{}].password` \
+     in configs.toml — provide one or the other",
+    alias, alias
+  )))
 }

@@ -519,29 +519,61 @@ async fn handle_validate(config_path: Option<std::path::PathBuf>) -> AnyhowResul
 
   info!("Validating configuration file: {}", path.display());
 
-  match AppConfig::from_file(&path) {
-    Ok(config) => {
-      println!("✓ Configuration is valid");
-      println!("  Hosts configured: {}", config.hosts.len());
-      for host in &config.hosts {
-        println!("    - {} ({})", host.name, host.host);
-      }
-      println!("  Channels configured: {}", config.channels.len());
-      for conn in &config.channels {
-        let local = conn.ports.local_port.expect("local_port must be set");
-        let port_info = format!("{}:{}", local, conn.ports.dest_port);
-        println!("    - {} -> {}:{}", conn.name, conn.dest_host, port_info);
-      }
-      Ok(())
-    }
+  let config = match AppConfig::from_file(&path) {
+    Ok(c) => c,
     Err(e) => {
       error!("✗ Configuration validation failed: {}", e);
-      Err(anyhow::anyhow!("Invalid configuration: {}", e))
+      return Err(anyhow::anyhow!("Invalid configuration: {}", e));
     }
+  };
+
+  // Resolve channels against ~/.ssh/config — this is what actually catches missing
+  // host aliases, missing User/HostName/IdentityFile, and bad port specs.
+  let channels = match config.build_channels() {
+    Ok(c) => c,
+    Err(e) => {
+      error!("✗ Configuration validation failed: {}", e);
+      return Err(anyhow::anyhow!("Invalid configuration: {}", e));
+    }
+  };
+
+  println!("✓ Configuration is valid");
+  println!("  SSH config: {}", config.ssh_config_path().display());
+  println!("  Channels configured: {}", channels.len());
+  for ch in &channels {
+    let params = match &ch.params {
+      config::ChannelTypeParams::DirectTcpIp {
+        listen_host,
+        local_port,
+        dest_host,
+        dest_port,
+      } => format!(
+        "direct-tcpip {}:{} -> {}:{}",
+        listen_host, local_port, dest_host, dest_port
+      ),
+      config::ChannelTypeParams::ForwardedTcpIp {
+        remote_bind_port,
+        local_connect_host,
+        local_connect_port,
+      } => format!(
+        "forwarded-tcpip server:{} -> {}:{}",
+        remote_bind_port, local_connect_host, local_connect_port
+      ),
+      config::ChannelTypeParams::Session { .. } => "session".to_string(),
+    };
+    println!(
+      "    - {} via {}@{}:{} | {}",
+      ch.name, ch.username, ch.host, ch.port, params
+    );
   }
+  Ok(())
 }
 
-/// Handle generate command
+/// Handle generate command: scaffold a configs.toml from existing SSH config aliases.
+///
+/// Emits one commented-out `[[channels]]` template per SSH alias plus a
+/// `[reconnection]` default block. The user uncomments the channels they want
+/// and fills in ports.
 async fn handle_generate(
   ssh_config: Option<std::path::PathBuf>,
   output: Option<std::path::PathBuf>,
@@ -553,13 +585,14 @@ async fn handle_generate(
   let entries = parse_ssh_config(&ssh_config_path).context("Failed to parse SSH config file")?;
 
   if entries.is_empty() {
-    println!("⚠ No valid SSH config entries found");
-    return Ok(());
+    println!(
+      "⚠ No usable Host blocks found in {}",
+      ssh_config_path.display()
+    );
+    println!("  Add at least one with HostName and User, then re-run `generate`.");
+  } else {
+    info!("Found {} SSH config entries", entries.len());
   }
-
-  info!("Found {} SSH config entries", entries.len());
-
-  let app_config = AppConfig::from_ssh_config_entries(entries);
 
   let output_path = output.unwrap_or_else(|| {
     std::env::current_dir()
@@ -567,35 +600,33 @@ async fn handle_generate(
       .join("configs.toml")
   });
 
-  info!("Generating configuration to: {}", output_path.display());
+  let scaffold = AppConfig::generate_scaffold(&entries);
 
-  app_config
-    .to_file(&output_path)
-    .context("Failed to write configuration file")?;
+  info!("Writing scaffold to: {}", output_path.display());
+  std::fs::write(&output_path, scaffold).context("Failed to write configuration file")?;
 
-  println!("✓ Configuration generated successfully");
+  println!("✓ Configuration scaffold written");
   println!("  Output file: {}", output_path.display());
-  println!("  Hosts generated: {}", app_config.hosts.len());
-  for host in &app_config.hosts {
-    println!("    - {} ({})", host.name, host.host);
+  println!("  Templates: {}", entries.len());
+  for entry in &entries {
+    let target = entry.hostname.as_deref().unwrap_or("?");
+    println!("    - [auth.{}] available (target {})", entry.host, target);
   }
 
-  // Warn about password placeholders
-  let password_hosts: Vec<_> = app_config
-    .hosts
+  let needs_password: Vec<_> = entries
     .iter()
-    .filter(|h| matches!(h.auth, config::AuthConfig::Password { .. }))
+    .filter(|e| e.identity_file.is_none())
     .collect();
-
-  if !password_hosts.is_empty() {
+  if !needs_password.is_empty() {
     println!(
-      "\n⚠ Warning: {} host(s) use password authentication with placeholder 'CHANGE_ME'",
-      password_hosts.len()
+      "\n⚠ {} host(s) have no IdentityFile in SSH config — uncomment and fill in",
+      needs_password.len()
     );
-    println!("  Please update the password in the generated config file.");
+    println!("  the [auth.<alias>] block for each to provide a password.");
   }
 
-  println!("\n💡 Note: You need to manually add [[channels]] sections to define port forwarding.");
+  println!("\n💡 All channel entries are commented out. Uncomment the ones you want");
+  println!("   and replace LOCAL:DEST with concrete port numbers.");
 
   Ok(())
 }

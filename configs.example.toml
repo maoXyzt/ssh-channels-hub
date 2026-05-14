@@ -1,30 +1,52 @@
-# SSH Channels Hub Configuration Example
+# SSH Channels Hub configuration
+#
+# Host info (HostName / User / Port / IdentityFile) is read from ~/.ssh/config.
+# This file only defines:
+#   - which channels to bring up
+#   - per-host credentials SSH config can't hold (password / passphrase)
+#   - reconnection policy
+#
+# Optional: point at a non-default SSH config path.
+# Defaults to ~/.ssh/config when unset.
+# ssh_config = "~/.ssh/config"
 
 # --- Channel definitions ---
-# Channels reference hosts and define port forwarding
+# `hostname` is the SSH config Host alias (the word after `Host` in ~/.ssh/config).
+
 [[channels]]
 name = "db-tunnel"
-hostname = "example-server"
-ports = "3306:3306"         # Format: "local:dest" (local port 3306 -> dest port 3306)
-# dest_host = "127.0.0.1"      # 可选，默认为 "127.0.0.1"
+hostname = "example-server"   # matches `Host example-server` in ~/.ssh/config
+ports = "3306:3306"           # local 3306 -> remote 3306
+# dest_host = "127.0.0.1"     # optional, default 127.0.0.1
+# listen_host = "127.0.0.1"   # optional, default 127.0.0.1; "0.0.0.0" exposes on all NICs
 
 [[channels]]
 name = "web-tunnel"
 hostname = "example-server2"
-ports = "8080:80"            # Format: "local:dest" (local port 8080 -> dest port 80)
-dest_host = "127.0.0.1"      # 可以显式指定，也可以省略（使用默认值）
-# listen_host = "127.0.0.1"   # 本地监听地址，默认 127.0.0.1；填 "0.0.0.0" 可接受任意网卡连接
+ports = "8080:80"
+dest_host = "127.0.0.1"
 
-# Remote forward (ssh -R style): bind port on server, bridge to local
+# Remote forward (ssh -R style): bind a port on the server, bridge to local.
 # [[channels]]
 # name = "expose-local-web"
 # channel_type = "forwarded-tcpip"
 # hostname = "example-server"
-# ports = "8022:80"          # Format: "remote:local" (server port 8022 -> local 127.0.0.1:80)
-# dest_host = "127.0.0.1"    # Local host to connect to (default 127.0.0.1)
+# ports = "80:8022"           # local 80 (we connect to) : remote 8022 (server binds)
+# dest_host = "127.0.0.1"     # local host to connect to (default 127.0.0.1)
 
-# --- Reconnection settings ---
-# (applies to all channels)
+# --- Per-host credential overrides (optional) ---
+# Only needed when ~/.ssh/config can't fully authenticate the host:
+#   - host uses password auth (SSH config has no IdentityFile)
+#   - IdentityFile is encrypted with a passphrase
+# Keyed by the SSH config Host alias. Both fields are optional.
+
+# [auth.example-server]
+# passphrase = "key-passphrase"
+
+# [auth.example-server2]
+# password = "your-password-here"
+
+# --- Reconnection settings (applies to all channels) ---
 [reconnection]
 # Maximum retry attempts (0 = unlimited)
 max_retries = 0
@@ -32,28 +54,5 @@ max_retries = 0
 initial_delay_secs = 1
 # Maximum delay in seconds between retries
 max_delay_secs = 30
-# Use exponential backoff (true) or fixed interval (false)
+# Exponential backoff (true) or fixed interval (false)
 use_exponential_backoff = true
-
-# --- SSH Host definitions ---
-# Hosts define how to connect to remote SSH servers
-[[hosts]]
-name = "example-server"
-host = "example.com"
-username = "user"
-
-[hosts.auth]
-type = "key"
-key_path = "~/.ssh/id_rsa"
-# Optional passphrase for the key
-# passphrase = "your-key-passphrase"
-
-# Another host example with password authentication
-[[hosts]]
-name = "example-server2"
-host = "example2.com"
-username = "user2"
-
-[hosts.auth]
-type = "password"
-password = "your-password-here"

@@ -6,11 +6,11 @@ Cross-platform (Windows, Linux), written in Rust.
 
 ## Features
 
-- **Port forwarding**: Listen on local ports and forward traffic to remote hosts via SSH tunnels (direct-tcpip).
-- **Hosts + channels**: Define SSH hosts once, then reference them in channel configs (hostname, ports, dest_host, listen_host).
+- **Port forwarding**: Listen on local ports and forward traffic to remote hosts via SSH tunnels (direct-tcpip, forwarded-tcpip).
+- **Reads `~/.ssh/config` directly**: host info (HostName / User / Port / IdentityFile) lives in your SSH config. `configs.toml` only declares which channels to bring up.
 - **Automatic reconnection**: Reconnect with configurable backoff when the connection is lost.
 - **Foreground / daemon**: Default `start` runs in foreground; `start -D` runs as daemon (detached). Stop and restart use IPC so the process exits cleanly.
-- **Config validation**: Validate config file; generate config from `~/.ssh/config`.
+- **Config validation + scaffolding**: `validate` checks alias resolution against SSH config; `generate` scaffolds a `configs.toml` from existing aliases.
 
 ## Usage
 
@@ -40,7 +40,7 @@ The binary will be at `target/release/ssh-channels-hub` (or `ssh-channels-hub.ex
    cp configs.example.toml ~/.config/ssh-channels-hub/config.toml
    ```
 
-3. Edit the file with your hosts and channels. Use `--config /path/to/config.toml` to override. See [Configuration](docs/configuration.md) for details.
+3. Edit `configs.toml` with your channels. Host info (HostName / User / Port / IdentityFile) is read from `~/.ssh/config` — make sure each `hostname` in `configs.toml` matches a `Host <alias>` block there. Use `--config /path/to/config.toml` to override the config path. See [Configuration](docs/configuration.md) for details.
 
 ### Basic Commands
 
@@ -114,40 +114,49 @@ ssh-channels-hub validate
 ssh-channels-hub validate --config /path/to/config.toml
 ```
 
-#### Generate configuration from SSH config
+#### Generate configs.toml scaffold
 
-Generate a config from `~/.ssh/config`:
+Scan `~/.ssh/config` and emit a `configs.toml` with one commented-out `[[channels]]` template per alias:
 
 ```bash
 ssh-channels-hub generate
-ssh-channels-hub generate --ssh-config /path/to/ssh_config --output /path/to/config.toml
+ssh-channels-hub generate --ssh-config /path/to/ssh_config --output /path/to/configs.toml
 ```
 
-The generated file contains `[[hosts]]` entries. Add `[[channels]]` sections (hostname, ports, optional dest_host / listen_host) for port forwarding.
+Uncomment the channels you want and fill in `LOCAL:DEST` ports.
 
 ### Configuration format (summary)
 
-- **Hosts** (`[[hosts]]`): `name`, `host`, `port`, `username`, `auth` (key or password).
-- **Channels** (`[[channels]]`): `name`, `hostname` (must match a host), `ports`. Optional: `channel_type`, `dest_host`, `listen_host`.
+`~/.ssh/config` (per host):
+```
+Host my-alias
+  HostName example.com
+  User myuser
+  Port 22                     # optional, default 22
+  IdentityFile ~/.ssh/id_rsa  # optional; required unless you put a password in configs.toml
+```
+
+`configs.toml`:
+- **Channels** (`[[channels]]`): `name`, `hostname` (the SSH config alias), `ports`. Optional: `channel_type`, `dest_host`, `listen_host`.
   - **Local forward** (default, like `ssh -L`): `ports = "local:dest"` (e.g. `"80:3923"` = listen local 80 → remote 3923).
-  - **Remote forward** (like `ssh -R`): `channel_type = "forwarded-tcpip"`, `ports = "remote:local"` (e.g. `"8022:80"` = bind 8022 on server → connect to local 127.0.0.1:80).
+  - **Remote forward** (like `ssh -R`): `channel_type = "forwarded-tcpip"`, `ports = "local:remote"` (e.g. `"80:8022"` = bind 8022 on server → connect local 127.0.0.1:80).
+- **Per-host overrides** (`[auth.<alias>]`, optional): `password` for password-auth hosts, or `passphrase` for encrypted IdentityFile. SSH config can't hold either.
 - **Optional per channel**: `dest_host` (default `127.0.0.1`), `listen_host` (default `127.0.0.1`; use `0.0.0.0` for all interfaces; local forward only).
 
 ### Configuration examples
 
 #### Port forwarding (local 8080 → remote 80)
 
+`~/.ssh/config`:
+```
+Host web-server
+  HostName example.com
+  User user
+  IdentityFile ~/.ssh/id_rsa
+```
+
+`configs.toml`:
 ```toml
-[[hosts]]
-name = "web-server"
-host = "example.com"
-port = 22
-username = "user"
-
-[hosts.auth]
-type = "key"
-key_path = "~/.ssh/id_rsa"
-
 [[channels]]
 name = "web-tunnel"
 hostname = "web-server"
@@ -163,21 +172,32 @@ dest_host = "127.0.0.1"
 name = "db-tunnel"
 hostname = "db-server"
 ports = "3306:3306"
-dest_host = "127.0.0.1"
 listen_host = "0.0.0.0"
 ```
 
-#### Remote port forwarding (ssh -R style)
+#### Password authentication
 
-Expose a local service on the SSH server: bind a port on the server and bridge connections to a local address.
+`~/.ssh/config` has no `IdentityFile` for this host, so provide a password in `configs.toml`:
+
+```toml
+[[channels]]
+name = "jumpbox-web"
+hostname = "jumpbox"
+ports = "8080:80"
+
+[auth.jumpbox]
+password = "your-password"
+```
+
+#### Remote port forwarding (ssh -R style)
 
 ```toml
 [[channels]]
 name = "expose-local-web"
 channel_type = "forwarded-tcpip"
 hostname = "web-server"
-ports = "8022:80"           # remote port 8022 -> local 127.0.0.1:80
-dest_host = "127.0.0.1"    # local host to connect to (default)
+ports = "80:8022"           # local 80 (we connect to) : remote 8022 (server binds)
+dest_host = "127.0.0.1"     # local host to connect to (default)
 ```
 
 ### Common use cases
