@@ -74,73 +74,152 @@ fn expand_tilde(path: &Path) -> Result<PathBuf> {
   }
 }
 
-/// Parse SSH config content
+/// Parse SSH config content.
+///
+/// Keywords are case-insensitive (`Host`, `host`, `HOST` all match), the
+/// keyword-value separator may be whitespace or `=` (`Host=alias`), and
+/// values can be quoted with `"`/`'` to preserve embedded spaces. A `Host`
+/// line may list multiple aliases that share one config block — each
+/// alias becomes its own entry. Within a block, the first occurrence of a
+/// directive wins, matching `ssh_config(5)`.
 fn parse_ssh_config_content(content: &str) -> Result<Vec<SshConfigEntry>> {
   let mut entries = Vec::new();
-  let mut current_host: Option<String> = None;
+  let mut current_aliases: Vec<String> = Vec::new();
   let mut current_config: HashMap<String, String> = HashMap::new();
   let mut defaults = SshConfigDefaults::default();
   let mut is_default_host = false;
 
+  let flush = |aliases: &mut Vec<String>,
+               cfg: &mut HashMap<String, String>,
+               is_default: &mut bool,
+               defaults: &mut SshConfigDefaults,
+               entries: &mut Vec<SshConfigEntry>| {
+    if !aliases.is_empty() {
+      if *is_default {
+        // Multiple `Host *` blocks are merged, first occurrence wins (per ssh_config(5)).
+        // `take().or(...)` so existing String / PathBuf values are moved, not cloned.
+        let new = extract_defaults(cfg);
+        defaults.port = defaults.port.or(new.port);
+        defaults.user = defaults.user.take().or(new.user);
+        defaults.identity_file = defaults.identity_file.take().or(new.identity_file);
+      } else {
+        for alias in aliases.iter() {
+          if let Some(entry) = build_entry(alias, cfg, defaults) {
+            entries.push(entry);
+          }
+        }
+      }
+    }
+    aliases.clear();
+    cfg.clear();
+    *is_default = false;
+  };
+
   for line in content.lines() {
     let line = line.trim();
-
-    // Skip empty lines and comments
     if line.is_empty() || line.starts_with('#') {
       continue;
     }
 
-    // Handle Host directive (starts a new entry)
-    if line.starts_with("Host ") {
-      // Save previous entry if exists
-      if let Some(host) = current_host.take() {
-        if !is_default_host {
-          if let Some(entry) = build_entry(&host, &current_config, &defaults) {
-            entries.push(entry);
-          }
-        } else {
-          // This was Host "*", save as defaults
-          defaults = extract_defaults(&current_config);
-        }
-      }
-      current_config.clear();
-      is_default_host = false;
+    if let Some(host_part) = strip_keyword(line, "host") {
+      flush(
+        &mut current_aliases,
+        &mut current_config,
+        &mut is_default_host,
+        &mut defaults,
+        &mut entries,
+      );
 
-      // Extract host name(s) - can be space-separated or wildcards
-      let hosts = line[4..].trim();
-      // For simplicity, we'll use the first host name
-      // In real SSH config, multiple hosts can share the same config
-      let host = hosts.split_whitespace().next().unwrap_or("").to_string();
-
-      if host == "*" {
-        // This is the default host entry
+      let aliases = tokenize_value_list(host_part);
+      if aliases.iter().any(|a| a == "*") {
         is_default_host = true;
-        current_host = Some(host);
-      } else if !host.is_empty() {
-        current_host = Some(host);
+        current_aliases = vec!["*".to_string()];
+      } else {
+        current_aliases = aliases;
       }
-    } else if current_host.is_some() {
-      // Parse other directives
-      if let Some((key, value)) = parse_directive(line) {
-        current_config.insert(key.to_lowercase(), value);
-      }
+    } else if !current_aliases.is_empty()
+      && let Some((key, value)) = parse_directive(line)
+    {
+      // First occurrence wins, per ssh_config(5).
+      current_config.entry(key.to_lowercase()).or_insert(value);
     }
   }
 
-  // Save last entry
-  if let Some(host) = current_host {
-    if !is_default_host {
-      if let Some(entry) = build_entry(&host, &current_config, &defaults) {
-        entries.push(entry);
-      }
-    } else {
-      // This was Host "*", save as defaults (for potential future use)
-      // Note: This won't affect already processed entries, which matches SSH config behavior
-      let _ = extract_defaults(&current_config);
-    }
-  }
+  flush(
+    &mut current_aliases,
+    &mut current_config,
+    &mut is_default_host,
+    &mut defaults,
+    &mut entries,
+  );
 
   Ok(entries)
+}
+
+/// If `line` starts with `keyword` (case-insensitive) followed by whitespace or `=`,
+/// return the rest of the line trimmed. Otherwise `None`.
+fn strip_keyword<'a>(line: &'a str, keyword: &str) -> Option<&'a str> {
+  let kw_len = keyword.len();
+  if line.len() < kw_len {
+    return None;
+  }
+  let (head, rest) = line.split_at(kw_len);
+  if !head.eq_ignore_ascii_case(keyword) {
+    return None;
+  }
+  // The separator must be `=` (with any surrounding whitespace) or whitespace —
+  // reject `HostName` when we're looking for `host`, but accept `host=foo`,
+  // `host = foo`, and `host  foo`.
+  if rest.is_empty() {
+    None
+  } else if let Some(after_eq) = rest.trim_start().strip_prefix('=') {
+    Some(after_eq.trim_start())
+  } else if rest.starts_with(char::is_whitespace) {
+    Some(rest.trim_start())
+  } else {
+    None
+  }
+}
+
+/// Split a `Host` value into individual aliases, honoring quoted segments.
+fn tokenize_value_list(s: &str) -> Vec<String> {
+  let mut out = Vec::new();
+  let mut chars = s.chars().peekable();
+  while let Some(&c) = chars.peek() {
+    if c.is_whitespace() {
+      chars.next();
+      continue;
+    }
+    let token = read_token(&mut chars);
+    if !token.is_empty() {
+      out.push(token);
+    }
+  }
+  out
+}
+
+/// Read one whitespace-delimited token, honoring `"..."` and `'...'` quotes.
+fn read_token<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) -> String {
+  let mut out = String::new();
+  while let Some(&c) = chars.peek() {
+    if c.is_whitespace() {
+      break;
+    }
+    if c == '"' || c == '\'' {
+      let quote = c;
+      chars.next();
+      for qc in chars.by_ref() {
+        if qc == quote {
+          break;
+        }
+        out.push(qc);
+      }
+    } else {
+      out.push(c);
+      chars.next();
+    }
+  }
+  out
 }
 
 /// Extract default values from Host "*" config
@@ -154,16 +233,30 @@ fn extract_defaults(config: &HashMap<String, String>) -> SshConfigDefaults {
   }
 }
 
-/// Parse a directive line (e.g., "HostName example.com")
+/// Parse a directive line such as `HostName example.com`, `Port=2222`, or
+/// `IdentityFile "/path/with space"`. Returns the keyword and the de-quoted
+/// value (multi-arg directives are joined with single spaces).
 fn parse_directive(line: &str) -> Option<(&str, String)> {
-  let parts: Vec<&str> = line.split_whitespace().collect();
-  if parts.len() >= 2 {
-    let key = parts[0];
-    let value = parts[1..].join(" "); // Handle values with spaces
-    Some((key, value))
-  } else {
-    None
+  // Keyword runs until the first whitespace or `=`.
+  let key_end = line
+    .find(|c: char| c.is_whitespace() || c == '=')
+    .filter(|&i| i > 0)?;
+  let (key, rest) = line.split_at(key_end);
+  // Allow `=` (with surrounding whitespace) or whitespace as the separator.
+  let value_part = match rest.trim_start().strip_prefix('=') {
+    Some(after_eq) => after_eq.trim_start(),
+    None => rest.trim_start(),
+  };
+  if value_part.is_empty() {
+    return None;
   }
+
+  // De-quote every argument uniformly, then rejoin with single spaces.
+  let tokens = tokenize_value_list(value_part);
+  if tokens.is_empty() {
+    return None;
+  }
+  Some((key, tokens.join(" ")))
 }
 
 /// Build SshConfigEntry from host name and config map, applying defaults
@@ -293,5 +386,196 @@ Host myserver
     // Host "*" should not be included in entries
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].host, "myserver");
+  }
+
+  // --- ssh_config(5) compliance ---
+
+  #[test]
+  fn keywords_are_case_insensitive() {
+    let content = r#"
+host myserver
+    HOSTNAME example.com
+    user myuser
+    identityFILE ~/.ssh/id_rsa
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].host, "myserver");
+    assert_eq!(entries[0].hostname, Some("example.com".to_string()));
+    assert_eq!(entries[0].user, Some("myuser".to_string()));
+    assert!(entries[0].identity_file.is_some());
+  }
+
+  #[test]
+  fn equals_sign_separator_is_accepted() {
+    let content = r#"
+Host=alias-eq
+    HostName=example.com
+    Port=2222
+    User=myuser
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].host, "alias-eq");
+    assert_eq!(entries[0].hostname, Some("example.com".to_string()));
+    assert_eq!(entries[0].port, Some(2222));
+    assert_eq!(entries[0].user, Some("myuser".to_string()));
+  }
+
+  #[test]
+  fn host_line_with_multiple_aliases_creates_one_entry_per_alias() {
+    let content = r#"
+Host alpha beta gamma
+    HostName shared.example.com
+    User shareduser
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 3);
+    let aliases: Vec<_> = entries.iter().map(|e| e.host.as_str()).collect();
+    assert_eq!(aliases, vec!["alpha", "beta", "gamma"]);
+    for e in &entries {
+      assert_eq!(e.hostname, Some("shared.example.com".to_string()));
+      assert_eq!(e.user, Some("shareduser".to_string()));
+    }
+  }
+
+  #[test]
+  fn quoted_value_strips_quotes_and_preserves_spaces() {
+    let content = r#"
+Host quoted
+    HostName "example with space.com"
+    IdentityFile "/tmp/key with spaces"
+    User myuser
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+      entries[0].hostname,
+      Some("example with space.com".to_string())
+    );
+    let key = entries[0].identity_file.as_ref().unwrap();
+    let key_str = key.to_string_lossy();
+    assert!(
+      key_str.contains("key with spaces") && !key_str.contains('"'),
+      "key path should be unquoted and preserve spaces, got: {key_str}"
+    );
+  }
+
+  #[test]
+  fn first_directive_wins_within_block() {
+    let content = r#"
+Host dup
+    HostName first.example.com
+    HostName second.example.com
+    Port 2200
+    Port 9999
+    User firstuser
+    User seconduser
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].hostname, Some("first.example.com".to_string()));
+    assert_eq!(entries[0].port, Some(2200));
+    assert_eq!(entries[0].user, Some("firstuser".to_string()));
+  }
+
+  #[test]
+  fn multiple_wildcard_host_blocks_merge_with_first_wins() {
+    // Two `Host *` blocks should compose, not clobber each other.
+    let content = r#"
+Host *
+    Port 2222
+
+Host *
+    User defaultuser
+    IdentityFile ~/.ssh/default_key
+
+Host myserver
+    HostName example.com
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    let e = &entries[0];
+    assert_eq!(e.host, "myserver");
+    assert_eq!(e.port, Some(2222), "Port from first Host *");
+    assert_eq!(
+      e.user,
+      Some("defaultuser".to_string()),
+      "User from second Host *"
+    );
+    assert!(e.identity_file.is_some(), "IdentityFile from second Host *");
+  }
+
+  #[test]
+  fn first_wildcard_host_value_wins_when_repeated() {
+    let content = r#"
+Host *
+    Port 2222
+
+Host *
+    Port 9999
+
+Host myserver
+    HostName example.com
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].port, Some(2222), "first Host * value should win");
+  }
+
+  #[test]
+  fn equals_separator_tolerates_surrounding_whitespace() {
+    let content = r#"
+Host = padded-eq
+    HostName  =  example.com
+    Port    =    2222
+    User=u
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    let e = &entries[0];
+    assert_eq!(e.host, "padded-eq");
+    assert_eq!(e.hostname, Some("example.com".to_string()));
+    assert_eq!(e.port, Some(2222));
+    assert_eq!(e.user, Some("u".to_string()));
+  }
+
+  #[test]
+  fn directive_with_multiple_quoted_args_dequotes_all() {
+    // Regression for inconsistent quoting in parse_directive: when a directive
+    // has several quoted args, every one of them should be de-quoted (not just
+    // the first), and the result should be space-joined.
+    let content = r#"
+Host multiarg
+    HostName example.com
+    User u
+    SendEnv "VAR1" "VAR2"
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    // Round-trip through parse_directive directly (SendEnv isn't surfaced in
+    // SshConfigEntry, but its parse path is shared with the ones that are).
+    let (key, value) = parse_directive(r#"SendEnv "VAR1" "VAR2""#).unwrap();
+    assert_eq!(key, "SendEnv");
+    assert_eq!(value, "VAR1 VAR2", "all args should be de-quoted");
+
+    let (key, value) = parse_directive(r#"IdentityFile "/path with space""#).unwrap();
+    assert_eq!(key, "IdentityFile");
+    assert_eq!(value, "/path with space");
+  }
+
+  #[test]
+  fn hostname_keyword_is_not_confused_with_host() {
+    // Regression guard: strip_keyword("HostName...", "host") must NOT match,
+    // otherwise we'd start a new Host block on every HostName directive.
+    let content = r#"
+Host real-alias
+    HostName real.example.com
+    User u
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].host, "real-alias");
+    assert_eq!(entries[0].hostname, Some("real.example.com".to_string()));
   }
 }
