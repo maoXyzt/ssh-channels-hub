@@ -156,7 +156,7 @@ pub struct ConnectionConfig {
   pub remote: Endpoint,
 }
 
-/// SSH channel configuration (runtime — built by combining configs.toml + ~/.ssh/config)
+/// SSH channel configuration (runtime — built by combining config.toml + ~/.ssh/config)
 #[derive(Debug, Clone)]
 pub struct ChannelConfig {
   /// Channel name/identifier
@@ -314,10 +314,10 @@ impl AppConfig {
   }
 
   /// Default config file candidates (first existing wins; if none exist, first is used).
-  /// Order: current directory `configs.toml`, then platform config dir `config.toml`.
+  /// Order: current directory `config.toml`, then platform config dir `config.toml`.
   pub fn default_path_candidates() -> Vec<PathBuf> {
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut candidates = vec![current_dir.join("configs.toml")];
+    let mut candidates = vec![current_dir.join("config.toml")];
     if let Some(mut path) = dirs::config_dir() {
       path.push("ssh-channels-hub");
       path.push("config.toml");
@@ -336,10 +336,10 @@ impl AppConfig {
     Self::default_path_candidates()
       .into_iter()
       .next()
-      .unwrap_or_else(|| PathBuf::from("configs.toml"))
+      .unwrap_or_else(|| PathBuf::from("config.toml"))
   }
 
-  /// Resolved SSH config path (override from configs.toml or platform default).
+  /// Resolved SSH config path (override from config.toml or platform default).
   pub fn ssh_config_path(&self) -> PathBuf {
     self
       .ssh_config
@@ -424,7 +424,7 @@ impl AppConfig {
     Ok(channels)
   }
 
-  /// Render a commented-out configs.toml scaffold from SSH config entries.
+  /// Render a commented-out config.toml scaffold from SSH config entries.
   /// Used by the `generate` subcommand.
   pub fn generate_scaffold(entries: &[ssh_config::SshConfigEntry]) -> String {
     let mut out = String::new();
@@ -506,7 +506,7 @@ fn resolve_auth(
 
   Err(AppError::Config(format!(
     "Host '{}' has no `IdentityFile` in SSH config and no `[auth.{}].password` \
-     in configs.toml — provide one or the other",
+     in config.toml — provide one or the other",
     alias, alias
   )))
 }

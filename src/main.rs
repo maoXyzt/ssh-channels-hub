@@ -5,6 +5,7 @@ mod port_check;
 mod service;
 mod ssh;
 mod ssh_config;
+mod ui;
 
 use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
 use clap::Parser;
@@ -23,12 +24,17 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> AnyhowResult<()> {
   let cli = Cli::parse();
+
+  // Honor --no-color (NO_COLOR env var is already respected by owo-colors).
+  if cli.no_color {
+    ui::disable_colors();
+  }
 
   // Initialize logging
   init_logging(cli.debug)?;
@@ -91,7 +97,8 @@ async fn spawn_daemon(config_path: &Path, debug: bool) -> AnyhowResult<()> {
   cmd.spawn().context("Spawn daemon process")?;
 
   tokio::time::sleep(Duration::from_millis(800)).await;
-  println!("Service started in daemon mode. Use 'ssh-channels-hub status' to check.");
+  ui::success("Service started in daemon mode");
+  ui::hint("Run `ssh-channels-hub status` to inspect the live state.");
   Ok(())
 }
 
@@ -122,9 +129,12 @@ async fn handle_start(
     return Ok(());
   }
 
-  info!("Loading configuration from: {}", config_path.display());
+  ui::header("🚀", "Starting ssh-channels-hub");
+  ui::kv_dim("Config", config_path.display());
 
   let config = AppConfig::from_file(&config_path).context("Failed to load configuration")?;
+  ui::kv("Channels", config.channels.len());
+  ui::kv_dim("SSH config", config.ssh_config_path().display());
 
   info!("Configuration loaded successfully");
 
@@ -142,19 +152,21 @@ async fn handle_start(
     .await
     .context("Failed to start IPC listener for status queries")?;
   write_pid_file(&pid_file_path(&config_path)).context("Write PID file")?;
-  info!(
+  debug!(
     "Status query listener on 127.0.0.1:{} (status command will connect here)",
     port
   );
 
-  info!("Service running in foreground. Press Ctrl+C to stop.");
+  println!();
+  ui::info("Service running in foreground. Press Ctrl+C to stop.");
 
   tokio::select! {
       _ = tokio::signal::ctrl_c() => {}
       _ = cancel.cancelled() => {}
   }
 
-  info!("Shutdown signal received, stopping service...");
+  println!();
+  ui::step("Shutdown signal received, stopping service...");
 
   cancel.cancel();
   let _ = remove_run_files(&config_path);
@@ -163,6 +175,7 @@ async fn handle_start(
     .await
     .context("Failed to stop service")?;
 
+  ui::success("Service stopped cleanly.");
   Ok(())
 }
 
@@ -367,122 +380,112 @@ async fn send_stop_via_ipc(config_path: &Path) -> AnyhowResult<()> {
 
 /// Handle stop command: send "stop" via IPC so daemon exits, then remove run files.
 async fn handle_stop(config_path: PathBuf) -> AnyhowResult<()> {
-  info!("Stop command received");
+  ui::header("🛑", "Stopping ssh-channels-hub");
 
+  let mut signalled = false;
   if port_file_path(&config_path).exists() {
     match send_stop_via_ipc(&config_path).await {
       Ok(()) => {
-        println!("Sent stop signal to service.");
+        ui::step("Sent stop signal to the running service.");
+        signalled = true;
         tokio::time::sleep(Duration::from_millis(600)).await;
       }
       Err(e) => {
-        println!("⚠ Could not reach service via IPC: {}", e);
+        ui::warn(format!("Could not reach service via IPC: {}", e));
       }
     }
+  } else {
+    ui::info("No PID/port file found — service may not be running.");
   }
 
   remove_run_files(&config_path).context("Remove run files")?;
-  println!("Service stopped (run files removed).");
+  if signalled {
+    ui::success("Service stopped.");
+  } else {
+    ui::success("Run files cleaned up.");
+  }
   Ok(())
 }
 
 /// Handle restart command: stop running service via IPC (if any), then start as daemon.
 async fn handle_restart(config_path: std::path::PathBuf, debug: bool) -> AnyhowResult<()> {
-  info!("Restart command received");
+  ui::header("🔄", "Restarting ssh-channels-hub");
 
   if port_file_path(&config_path).exists() {
     match send_stop_via_ipc(&config_path).await {
       Ok(()) => {
-        println!("Sent stop signal to running service.");
+        ui::step("Stopping the running service…");
         tokio::time::sleep(Duration::from_millis(700)).await;
       }
       Err(e) => {
-        info!("No running service or IPC failed: {}", e);
+        debug!("No running service or IPC failed: {}", e);
+        ui::info("No running service detected, starting fresh.");
       }
     }
     let _ = remove_run_files(&config_path);
+  } else {
+    ui::info("No running service detected, starting fresh.");
   }
 
-  println!("Starting service (daemon mode)...");
+  ui::step("Spawning service in daemon mode…");
   spawn_daemon(&config_path, debug)
     .await
     .context("Failed to start service after restart")?;
-  println!("Service restarted.");
+  ui::success("Service restarted.");
   Ok(())
-}
-
-/// Print channel list from config: one line per channel, arrow shows direction.
-fn print_channel_list(channels: &[config::ConnectionConfig]) {
-  if channels.is_empty() {
-    return;
-  }
-  println!("  Channels:");
-  for c in channels {
-    let local = format!("{}:{}", c.local.host, c.local.port);
-    let remote = format!("{}:{}", c.remote.host, c.remote.port);
-    let arrow = match c.direction {
-      config::Direction::LocalToRemote => "->",
-      config::Direction::RemoteToLocal => "<-",
-    };
-    println!(
-      "    - {} \tlocal {} {} remote {} (host: {})",
-      c.name, local, arrow, remote, c.hostname
-    );
-  }
-}
-
-/// Format ServiceState with emoji for status output.
-fn state_display(state: &ServiceState) -> &'static str {
-  match state {
-    ServiceState::Running => "🟢 Running",
-    ServiceState::Stopped => "🔴 Stopped",
-    ServiceState::Starting => "🟡 Starting",
-    ServiceState::Stopping => "🟠 Stopping",
-    ServiceState::Error(_) => "❌ Error",
-  }
 }
 
 /// Handle status command: connect to main process via IPC to get live status.
 async fn handle_status(config_path: PathBuf) -> AnyhowResult<()> {
   // Try IPC first: connect to running main process
   if let Ok(status) = query_status_via_ipc(&config_path).await {
-    println!("Service Status:");
-    println!("  State: {}", state_display(&status.state));
-    println!(
-      "  Active Channels: {}/{}",
-      status.active_channels, status.total_channels
-    );
-    println!("  Config: {}", config_path.display());
-    if let Ok(pid) = std::fs::read_to_string(pid_file_path(&config_path)) {
-      let pid = pid.trim();
-      if !pid.is_empty() {
-        println!("  PID: {}", pid);
-      }
-    }
+    let pid = std::fs::read_to_string(pid_file_path(&config_path)).ok();
+    let pid_str = pid
+      .as_deref()
+      .map(str::trim)
+      .filter(|s| !s.is_empty())
+      .map(|s| s.to_string());
+
+    ui::print_service_status(&status, &config_path, pid_str.as_deref(), None);
+
     if let Ok(config) = AppConfig::from_file(&config_path) {
-      print_channel_list(&config.channels);
+      println!();
+      ui::channel_list(&config.channels);
     }
     return Ok(());
   }
 
   // No running process (IPC file missing or connection refused): show Stopped with config totals
   if !config_path.exists() {
-    println!("✗ Service not configured (config file not found)");
+    ui::header("📋", "Service Status");
+    ui::fail(format!(
+      "Configuration file not found: {}",
+      config_path.display()
+    ));
+    ui::hint("Run `ssh-channels-hub generate` to scaffold a config.toml from ~/.ssh/config.");
     return Ok(());
   }
 
   match AppConfig::from_file(&config_path) {
     Ok(config) => {
       let total = config.channels.len();
-      println!("Service Status:");
-      println!("  State: {}", state_display(&ServiceState::Stopped));
-      println!("  Active Channels: 0/{}", total);
-      println!("  Config: {}", config_path.display());
-      println!("  Note: Service is not running. Start with: ssh-channels-hub start");
-      print_channel_list(&config.channels);
+      let status = service::ServiceStatus {
+        state: ServiceState::Stopped,
+        active_channels: 0,
+        total_channels: total,
+      };
+      ui::print_service_status(
+        &status,
+        &config_path,
+        None,
+        Some("Service is not running. Start with: `ssh-channels-hub start -D`"),
+      );
+      println!();
+      ui::channel_list(&config.channels);
     }
     Err(e) => {
-      println!("✗ Failed to load configuration: {}", e);
+      ui::header("📋", "Service Status");
+      ui::fail(format!("Failed to load configuration: {}", e));
       return Err(anyhow::anyhow!("Failed to load config: {}", e));
     }
   }
@@ -495,59 +498,51 @@ async fn handle_validate(config_path: Option<std::path::PathBuf>) -> AnyhowResul
   let path = config_path
     .ok_or_else(|| anyhow::anyhow!("Configuration file path required for validation"))?;
 
-  info!("Validating configuration file: {}", path.display());
+  ui::header("🔍", "Validating configuration");
+  ui::kv_dim("Config", path.display());
 
   let config = match AppConfig::from_file(&path) {
     Ok(c) => c,
     Err(e) => {
-      error!("✗ Configuration validation failed: {}", e);
+      println!();
+      ui::fail(format!("Configuration could not be parsed: {}", e));
       return Err(anyhow::anyhow!("Invalid configuration: {}", e));
     }
   };
+
+  ui::kv_dim("SSH config", config.ssh_config_path().display());
 
   // Resolve channels against ~/.ssh/config — this is what actually catches missing
   // host aliases, missing User/HostName/IdentityFile, and bad port specs.
   let channels = match config.build_channels() {
     Ok(c) => c,
     Err(e) => {
-      error!("✗ Configuration validation failed: {}", e);
+      println!();
+      ui::fail(format!("Channels failed to resolve: {}", e));
+      ui::hint(
+        "Check that each `hostname` matches a `Host` alias in ~/.ssh/config and has HostName/User set.",
+      );
       return Err(anyhow::anyhow!("Invalid configuration: {}", e));
     }
   };
 
-  println!("✓ Configuration is valid");
-  println!("  SSH config: {}", config.ssh_config_path().display());
-  println!("  Channels configured: {}", channels.len());
-  for ch in &channels {
-    let params = match &ch.params {
-      config::ChannelTypeParams::DirectTcpIp {
-        listen_host,
-        local_port,
-        dest_host,
-        dest_port,
-      } => format!(
-        "local->remote (listen {}:{} -> {}:{})",
-        listen_host, local_port, dest_host, dest_port
-      ),
-      config::ChannelTypeParams::ForwardedTcpIp {
-        remote_bind_host,
-        remote_bind_port,
-        local_connect_host,
-        local_connect_port,
-      } => format!(
-        "remote->local (bind {}:{} -> local {}:{})",
-        remote_bind_host, remote_bind_port, local_connect_host, local_connect_port
-      ),
-    };
-    println!(
-      "    - {} via {}@{}:{} | {}",
-      ch.name, ch.username, ch.host, ch.port, params
-    );
+  println!();
+  ui::success(format!(
+    "Configuration is valid — {} channel(s) resolved.",
+    channels.len()
+  ));
+
+  if !channels.is_empty() {
+    println!();
+    ui::subheader("  Resolved channels:");
+    for ch in &channels {
+      ui::resolved_channel_line(&ch.name, &ch.username, &ch.host, ch.port, &ch.params);
+    }
   }
   Ok(())
 }
 
-/// Handle generate command: scaffold a configs.toml from existing SSH config aliases.
+/// Handle generate command: scaffold a config.toml from existing SSH config aliases.
 ///
 /// Emits one commented-out `[[channels]]` template per SSH alias plus a
 /// `[reconnection]` default block. The user uncomments the channels they want
@@ -558,37 +553,51 @@ async fn handle_generate(
 ) -> AnyhowResult<()> {
   let ssh_config_path = ssh_config.unwrap_or_else(default_ssh_config_path);
 
-  info!("Reading SSH config from: {}", ssh_config_path.display());
+  ui::header("📝", "Generating config.toml scaffold");
+  ui::kv_dim("SSH config", ssh_config_path.display());
 
   let entries = parse_ssh_config(&ssh_config_path).context("Failed to parse SSH config file")?;
 
   if entries.is_empty() {
-    println!(
-      "⚠ No usable Host blocks found in {}",
+    ui::warn(format!(
+      "No usable Host blocks found in {}",
       ssh_config_path.display()
-    );
-    println!("  Add at least one with HostName and User, then re-run `generate`.");
-  } else {
-    info!("Found {} SSH config entries", entries.len());
+    ));
+    ui::hint("Add at least one Host with HostName and User, then re-run `generate`.");
   }
 
   let output_path = output.unwrap_or_else(|| {
     std::env::current_dir()
       .unwrap_or_else(|_| std::path::PathBuf::from("."))
-      .join("configs.toml")
+      .join("config.toml")
   });
 
   let scaffold = AppConfig::generate_scaffold(&entries);
 
-  info!("Writing scaffold to: {}", output_path.display());
   std::fs::write(&output_path, scaffold).context("Failed to write configuration file")?;
 
-  println!("✓ Configuration scaffold written");
-  println!("  Output file: {}", output_path.display());
-  println!("  Templates: {}", entries.len());
-  for entry in &entries {
-    let target = entry.hostname.as_deref().unwrap_or("?");
-    println!("    - [auth.{}] available (target {})", entry.host, target);
+  ui::kv("Output", output_path.display());
+  ui::kv("Templates", entries.len());
+
+  println!();
+  ui::success("Configuration scaffold written.");
+
+  if !entries.is_empty() {
+    println!();
+    ui::subheader("  Hosts found in SSH config:");
+    for entry in &entries {
+      let target = entry.hostname.as_deref().unwrap_or("?");
+      let key_info = match &entry.identity_file {
+        Some(path) => format!("key: {}", path.display()),
+        None => "no IdentityFile (password required)".to_string(),
+      };
+      ui::host_entry_line(
+        &entry.host,
+        target,
+        &key_info,
+        entry.identity_file.is_some(),
+      );
+    }
   }
 
   let needs_password: Vec<_> = entries
@@ -596,96 +605,114 @@ async fn handle_generate(
     .filter(|e| e.identity_file.is_none())
     .collect();
   if !needs_password.is_empty() {
-    println!(
-      "\n⚠ {} host(s) have no IdentityFile in SSH config — uncomment and fill in",
-      needs_password.len()
-    );
-    println!("  the [auth.<alias>] block for each to provide a password.");
+    println!();
+    ui::warn(format!(
+      "{} host(s) have no IdentityFile — fill in [auth.<alias>].password in {}",
+      needs_password.len(),
+      output_path.display()
+    ));
   }
 
-  println!("\n💡 All channel entries are commented out. Uncomment the ones you want");
-  println!("   and replace LOCAL_PORT / REMOTE_PORT with concrete ports (or host:port).");
+  println!();
+  ui::hint("All [[channels]] entries are commented out. Uncomment the ones you need");
+  ui::hint("and replace LOCAL_PORT / REMOTE_PORT with concrete ports (or host:port).");
 
   Ok(())
 }
 
 /// Handle test command - verify channels are working
 async fn handle_test(config_path: std::path::PathBuf) -> AnyhowResult<()> {
-  info!("Loading configuration from: {}", config_path.display());
+  ui::header("🧪", "Testing channels");
+  ui::kv_dim("Config", config_path.display());
 
   let config = AppConfig::from_file(&config_path).context("Failed to load configuration")?;
 
   if config.channels.is_empty() {
-    println!("No channels configured");
+    println!();
+    ui::warn("No channels configured.");
+    ui::hint("Run `ssh-channels-hub generate` to scaffold one.");
     return Ok(());
   }
 
-  println!("Testing {} channel(s)...\n", config.channels.len());
+  let total = config.channels.len();
+  ui::kv("Channels", total);
+  println!();
 
-  let mut all_passed = true;
+  let mut passed = 0usize;
+  let mut failed = 0usize;
+  let mut skipped = 0usize;
 
   for conn in &config.channels {
     if conn.direction == config::Direction::RemoteToLocal {
-      print!("Channel '{}' (remote->local)... ", conn.name);
-      println!("skipped (test connects to local listener; use remote port on server to verify)");
+      println!(
+        "  ⏭ {} (remote→local) — skipped, test only covers local listeners",
+        conn.name
+      );
+      skipped += 1;
       continue;
     }
 
     let local_host = conn.local.host.as_str();
     let local_port = conn.local.port;
     let remote_addr = format!("{}:{}", conn.remote.host, conn.remote.port);
-
-    print!(
-      "Testing channel '{}' ({}:{} -> {})... ",
+    let label = format!(
+      "{} ({}:{} → {})",
       conn.name, local_host, local_port, remote_addr
     );
 
     // First check if port is listening
     match test_port_connection(local_host, local_port).await {
       Ok(false) => {
-        println!("✗ Port not listening");
-        all_passed = false;
+        ui::fail(format!("{} — port not listening", label));
+        failed += 1;
         continue;
       }
       Err(e) => {
-        println!("✗ Error checking port: {}", e);
-        all_passed = false;
+        ui::fail(format!("{} — error checking port: {}", label, e));
+        failed += 1;
         continue;
       }
-      Ok(true) => {
-        // Port is listening, now test if tunnel is actually working
-        match test_tunnel_connection(local_host, local_port).await {
-          Ok(true) => {
-            println!("✓ Tunnel working");
-          }
-          Ok(false) => {
-            println!("✗ Tunnel dead (SSH connection may be broken)");
-            all_passed = false;
-          }
-          Err(e) => {
-            println!("✗ Error testing tunnel: {}", e);
-            all_passed = false;
-          }
+      Ok(true) => match test_tunnel_connection(local_host, local_port).await {
+        Ok(true) => {
+          ui::success(format!("{} — tunnel working", label));
+          passed += 1;
         }
-      }
+        Ok(false) => {
+          ui::fail(format!(
+            "{} — tunnel dead (SSH connection may be broken)",
+            label
+          ));
+          failed += 1;
+        }
+        Err(e) => {
+          ui::fail(format!("{} — error testing tunnel: {}", label, e));
+          failed += 1;
+        }
+      },
     }
   }
 
   println!();
+  ui::subheader("  Summary");
+  ui::kv("Passed", passed);
+  ui::kv("Failed", failed);
+  ui::kv("Skipped", skipped);
 
-  if all_passed {
-    println!("✓ All channels are working correctly!");
+  if failed == 0 {
+    println!();
+    ui::success("All testable channels are working.");
     Ok(())
   } else {
-    println!("✗ Some channels failed the connection test");
-    println!("\nTroubleshooting tips:");
-    println!(
-      "1. Make sure the service is running: cargo run start -c {}",
+    println!();
+    ui::fail(format!("{} channel(s) failed.", failed));
+    ui::subheader("  Troubleshooting:");
+    ui::hint(format!(
+      "Make sure the service is running: ssh-channels-hub status -c {}",
       config_path.display()
-    );
-    println!("2. Check if ports are listening: netstat -an | grep LISTEN");
-    println!("3. Verify SSH connection is established (check logs with --debug)");
-    println!("4. Ensure remote service is accessible from the SSH server");
+    ));
+    ui::hint("Check whether local ports are listening: `lsof -i -P -n | grep LISTEN`.");
+    ui::hint("Re-run with `--debug` to see SSH session logs.");
+    ui::hint("Verify the remote service is reachable from the SSH server itself.");
     Err(anyhow::anyhow!("Some channels failed the connection test"))
   }
 }

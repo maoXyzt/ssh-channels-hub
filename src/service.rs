@@ -2,6 +2,7 @@ use crate::config::{AppConfig, ChannelTypeParams};
 use crate::error::{AppError, Result};
 use crate::port_check::check_ports;
 use crate::ssh::SshManager;
+use crate::ui;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
@@ -112,30 +113,31 @@ impl ServiceManager {
             } => {
               let remote = format!("{}:{}", remote_bind_host, remote_bind_port);
               let local_dest = format!("{}:{}", local_connect_host, local_connect_port);
-              println!(
-                "✓ Channel '{}' started: remote {} -> local {} ({}@{})",
+              ui::success(format!(
+                "{}  remote {} ← local {}  via {}@{}",
                 channel_config.name,
                 remote,
                 local_dest,
                 channel_config.username,
                 channel_config.host
-              );
+              ));
             }
             ChannelTypeParams::DirectTcpIp {
+              listen_host,
               local_port,
               dest_host,
               dest_port,
-              ..
             } => {
-              let dest_info = format!("{}:{}", dest_host, dest_port);
-              println!(
-                "✓ Channel '{}' started: local:{} -> {} -> {}@{}",
+              ui::success(format!(
+                "{}  local {}:{} → remote {}:{}  via {}@{}",
                 channel_config.name,
+                listen_host,
                 local_port,
-                dest_info,
+                dest_host,
+                dest_port,
                 channel_config.username,
                 channel_config.host
-              );
+              ));
             }
           }
 
@@ -143,7 +145,7 @@ impl ServiceManager {
           managers.push(manager);
         }
         Err(e) => {
-          println!("✗ Channel '{}' failed to start: {}", channel_config.name, e);
+          ui::fail(format!("{} — {}", channel_config.name, e));
           error!(
               channel = %channel_config.name,
               error = ?e,
@@ -158,27 +160,37 @@ impl ServiceManager {
     let mut managers_guard = self.managers.lock().await;
     *managers_guard = managers;
 
+    let active = managers_guard.len();
+    let total = active + errors.len();
+
     if errors.is_empty() {
       *state = ServiceState::Running;
-      println!(
-        "\n✓ Service started successfully with {} active channel(s)",
-        managers_guard.len()
-      );
+      println!();
+      ui::success(format!(
+        "Service started — {}/{} channel(s) active.",
+        active, total
+      ));
       info!("Service started successfully");
       Ok(())
     } else if managers_guard.is_empty() {
       *state = ServiceState::Error(format!("All channels failed: {}", errors.join(", ")));
+      println!();
+      ui::fail(format!(
+        "Service failed to start — all {} channel(s) errored.",
+        errors.len()
+      ));
       Err(AppError::Service(format!(
         "Failed to start any channels: {}",
         errors.join(", ")
       )))
     } else {
       *state = ServiceState::Running;
-      println!(
-        "\n⚠ Service started with {} active channel(s), {} failed",
-        managers_guard.len(),
+      println!();
+      ui::warn(format!(
+        "Service started with errors — {} active, {} failed.",
+        active,
         errors.len()
-      );
+      ));
       warn!(
           errors = %errors.join(", "),
           "Service started with some channel failures"

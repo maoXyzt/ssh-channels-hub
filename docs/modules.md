@@ -67,7 +67,7 @@ pub enum Commands {
 
 ### 2.3 config.rs
 
-**职责**: 加载 `configs.toml`、解析、并联合 `~/.ssh/config` 构造运行时 ChannelConfig。
+**职责**: 加载 `config.toml`、解析、并联合 `~/.ssh/config` 构造运行时 ChannelConfig。
 
 host info(HostName / User / Port / IdentityFile)由 `ssh_config.rs` 从 `~/.ssh/config` 读出,`config.rs` 只负责 channels、auth 覆盖、重连策略。
 
@@ -104,7 +104,7 @@ pub struct AuthOverride {
     pub passphrase: Option<String>,            // IdentityFile 的 passphrase
 }
 
-// Runtime channel configuration (built from configs.toml + ~/.ssh/config)
+// Runtime channel configuration (built from config.toml + ~/.ssh/config)
 pub struct ChannelConfig {
     pub name: String,
     pub host: String,                          // resolved from SSH HostName
@@ -123,10 +123,10 @@ pub enum AuthConfig {
 **主要功能**:
 
 - `AppConfig::from_file()`: 加载并反序列化
-- `AppConfig::default_path()`: 获取默认 configs.toml 路径
+- `AppConfig::default_path()`: 获取默认 config.toml 路径
 - `AppConfig::ssh_config_path()`: 计算 SSH config 实际路径(`ssh_config` 字段优先,否则 `~/.ssh/config`)
 - `AppConfig::build_channels()`: 解析 SSH config、按 alias 查表、套用 auth 覆盖,构造 `Vec<ChannelConfig>`
-- `AppConfig::generate_scaffold()`: 从 SSH config 条目渲染一份注释掉的 `configs.toml` 文本,供 `generate` 子命令使用
+- `AppConfig::generate_scaffold()`: 从 SSH config 条目渲染一份注释掉的 `config.toml` 文本,供 `generate` 子命令使用
 
 **auth 解析规则(`resolve_auth`)**:
 

@@ -1,18 +1,18 @@
 # 配置文档
 
-SSH Channels Hub 把 host 信息(`HostName` / `User` / `Port` / `IdentityFile`)托管给 `~/.ssh/config`。`configs.toml` 只保留 channels 定义、可选的密码 / passphrase 覆盖、以及重连策略。
+SSH Channels Hub 把 host 信息(`HostName` / `User` / `Port` / `IdentityFile`)托管给 `~/.ssh/config`。`config.toml` 只保留 channels 定义、可选的密码 / passphrase 覆盖、以及重连策略。
 
 ## 1. 配置文件位置
 
 按顺序查找,使用第一个存在的文件:
 
-- 当前目录: `./configs.toml`
+- 当前目录: `./config.toml`
 - Linux/macOS: `~/.config/ssh-channels-hub/config.toml`
 - Windows: `%APPDATA%\ssh-channels-hub\config.toml`
 
 `--config` 指定时仅使用该文件,不再查找默认路径。
 
-`~/.ssh/config` 的位置:操作系统默认 `~/.ssh/config`;可在 `configs.toml` 顶层用 `ssh_config = "/path/to/config"` 覆盖。
+`~/.ssh/config` 的位置:操作系统默认 `~/.ssh/config`;可在 `config.toml` 顶层用 `ssh_config = "/path/to/config"` 覆盖。
 
 ## 2. 文件结构
 
@@ -128,7 +128,7 @@ Host prod-db
   IdentityFile ~/.ssh/id_rsa
 ```
 
-`configs.toml`:
+`config.toml`:
 ```toml
 [[channels]]
 name      = "db-tunnel"
@@ -150,7 +150,7 @@ Host jumpbox
   # 没有 IdentityFile
 ```
 
-`configs.toml`:
+`config.toml`:
 ```toml
 [[channels]]
 name      = "jumpbox-web"
@@ -231,7 +231,7 @@ remote    = "80"
 ### 4.7 用 `generate` 生成脚手架
 
 ```bash
-ssh-channels-hub generate -o configs.toml
+ssh-channels-hub generate -o config.toml
 ```
 
 工具扫一遍 `~/.ssh/config`,为每个 alias 输出**注释掉的** `[[channels]]` 模板。取消注释、填上 `local` / `remote` 端口即可。无 `IdentityFile` 的 host 同时会附上 `[auth.<alias>]` 模板。
@@ -239,7 +239,7 @@ ssh-channels-hub generate -o configs.toml
 ## 5. 配置验证
 
 ```bash
-ssh-channels-hub validate --config /path/to/configs.toml
+ssh-channels-hub validate --config /path/to/config.toml
 ```
 
 会做的检查:
@@ -263,9 +263,9 @@ ssh-channels-hub validate --config /path/to/configs.toml
 
 alias 的 `Host` 块里缺 `HostName` 或 `User`。补上即可。`User` 可以放在 `Host *` 里被继承。
 
-### `Host 'X' has no IdentityFile in SSH config and no [auth.X].password in configs.toml`
+### `Host 'X' has no IdentityFile in SSH config and no [auth.X].password in config.toml`
 
-二选一:在 `~/.ssh/config` 给该 host 加 `IdentityFile`,或在 `configs.toml` 加 `[auth.X] password = "..."`。
+二选一:在 `~/.ssh/config` 给该 host 加 `IdentityFile`,或在 `config.toml` 加 `[auth.X] password = "..."`。
 
 ### `invalid direction '...', expected "local->remote" or "remote->local"`
 
@@ -273,12 +273,12 @@ alias 的 `Host` 块里缺 `HostName` 或 `User`。补上即可。`User` 可以�
 
 ### `Failed to read SSH config at <path>`
 
-文件不存在或没读权限。检查路径(可在 `configs.toml` 用 `ssh_config = "..."` 显式指定)。
+文件不存在或没读权限。检查路径(可在 `config.toml` 用 `ssh_config = "..."` 显式指定)。
 
 ### 调试
 
 ```bash
-ssh-channels-hub start --debug --config /path/to/configs.toml
+ssh-channels-hub start --debug --config /path/to/config.toml
 ```
 
 `--debug` 会打印每个 channel 解析过程、SSH 握手、重试等。

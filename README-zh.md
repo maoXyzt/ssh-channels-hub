@@ -10,7 +10,7 @@
 
 适合下面这种情况:`ssh -L 3306:127.0.0.1:3306 db.example.com` 已经增长到了 *「我现在有五个这种命令,笔记本会睡眠,Wi-Fi 又时不时掉,我想合上盖子再开机时它们全自动回来」*。
 
-- **声明式**:隧道写在 `configs.toml`,不再散落在 shell 历史或终端窗口里。
+- **声明式**:隧道写在 `config.toml`,不再散落在 shell 历史或终端窗口里。
 - **不重复配置 host 信息**:`HostName` / `User` / `Port` / `IdentityFile` 直接从 `~/.ssh/config` 读,这里只引用 alias。
 - **自动重连**:每条隧道独立指数退避;一条断了不会拖死其它。
 - **两个方向同一套 schema**:`local->remote`(`ssh -L`)和 `remote->local`(`ssh -R`)。
@@ -43,7 +43,7 @@ Host my-db
   IdentityFile ~/.ssh/id_rsa
 ```
 
-**3. 在当前目录写 `configs.toml`**
+**3. 在当前目录写 `config.toml`**
 
 ```toml
 [[channels]]
@@ -62,15 +62,15 @@ ssh-channels-hub start          # Ctrl+C 退出
 
 之后 `mysql -h 127.0.0.1 -P 3306` 就走 SSH 隧道了。
 
-> **提示**:`ssh-channels-hub generate -o configs.toml` 会扫一遍 SSH config,为每个 alias 输出一个**注释掉的** `[[channels]]` 模板,取消注释再填端口即可。或者直接 `cp configs.example.toml configs.toml` 用带注释的示例文件起步。
+> **提示**:`ssh-channels-hub generate -o config.toml` 会扫一遍 SSH config,为每个 alias 输出一个**注释掉的** `[[channels]]` 模板,取消注释再填端口即可。或者直接 `cp config.example.toml config.toml` 用带注释的示例文件起步。
 
 ## 配置
 
-`configs.toml` 默认查找顺序(第一个存在的文件生效):
+`config.toml` 默认查找顺序(第一个存在的文件生效):
 
 | 平台 | 路径 |
 |---|---|
-| 当前目录(永远第一个查) | `./configs.toml` |
+| 当前目录(永远第一个查) | `./config.toml` |
 | Linux / macOS | `~/.config/ssh-channels-hub/config.toml` |
 | Windows | `%APPDATA%\ssh-channels-hub\config.toml` |
 
@@ -160,9 +160,9 @@ local     = "80"                # 收到的连接桥接到本机 127.0.0.1:80
 | `status` | 显示服务状态、已激活/总 channel 数、PID、channel 列表。 |
 | `test` | 测试每个 `local->remote` 的本地监听端口,确认隧道是通的。`remote->local` 的 channel 跳过,需要在服务器端实际连接验证。 |
 | `validate` | 把每个 channel 对照 `~/.ssh/config` 解析,列出问题。 |
-| `generate -o configs.toml` | 根据 SSH config alias 生成 `configs.toml` 脚手架。 |
+| `generate -o config.toml` | 根据 SSH config alias 生成 `config.toml` 脚手架。 |
 
-所有命令都接受 `--config /path/to/configs.toml` 来指向非默认配置文件,以及 `--debug` 打开详细日志。
+所有命令都接受 `--config /path/to/config.toml` 来指向非默认配置文件,以及 `--debug` 打开详细日志。
 
 ## 故障排查
 

@@ -1,6 +1,6 @@
 # 使用教程
 
-本文档提供 SSH Channels Hub 的常见使用场景和详细教程。host 信息从 `~/.ssh/config` 读取,`configs.toml` 只声明要建立的 channels 以及可选的密码 / passphrase 覆盖。
+本文档提供 SSH Channels Hub 的常见使用场景和详细教程。host 信息从 `~/.ssh/config` 读取,`config.toml` 只声明要建立的 channels 以及可选的密码 / passphrase 覆盖。
 
 ## 目录
 
@@ -28,7 +28,7 @@ Host remote-server
 
 如果该 host 没有 `IdentityFile`(密码登录),或者 `IdentityFile` 受 passphrase 保护,见 [§1.4 密码与 passphrase](#14-密码与-passphrase)。
 
-### 1.2 配置 `configs.toml`
+### 1.2 配置 `config.toml`
 
 ```toml
 [[channels]]
@@ -56,7 +56,7 @@ max_delay_secs = 30
 use_exponential_backoff = true
 ```
 
-`configs.toml` 默认查找顺序:`./configs.toml` → `~/.config/ssh-channels-hub/config.toml` → `%APPDATA%\ssh-channels-hub\config.toml`(Windows)。也可用 `--config` 显式指定。
+`config.toml` 默认查找顺序:`./config.toml` → `~/.config/ssh-channels-hub/config.toml` → `%APPDATA%\ssh-channels-hub\config.toml`(Windows)。也可用 `--config` 显式指定。
 
 ### 1.3 启动
 
@@ -71,7 +71,7 @@ ssh-channels-hub start --debug       # 调试日志
 
 ### 1.4 密码与 passphrase
 
-`~/.ssh/config` 存不了密码 / passphrase。需要时在 `configs.toml` 加 `[auth.<alias>]`:
+`~/.ssh/config` 存不了密码 / passphrase。需要时在 `config.toml` 加 `[auth.<alias>]`:
 
 ```toml
 # 密码登录(SSH config 无 IdentityFile)
@@ -122,7 +122,7 @@ Host db-server
   IdentityFile ~/.ssh/id_rsa
 ```
 
-`configs.toml`:
+`config.toml`:
 ```toml
 [[channels]]
 name      = "mysql-tunnel"
@@ -144,7 +144,7 @@ Host web-server
   IdentityFile ~/.ssh/deploy_key
 ```
 
-`configs.toml`:
+`config.toml`:
 ```toml
 [[channels]]
 name      = "web-tunnel"
@@ -165,7 +165,7 @@ Host redis-server
   User redis-user
 ```
 
-`configs.toml`:
+`config.toml`:
 ```toml
 [[channels]]
 name      = "redis-tunnel"

@@ -10,7 +10,7 @@ Cross-platform (Linux, macOS, Windows). Written in Rust on top of [russh](https:
 
 Reach for this when `ssh -L 3306:127.0.0.1:3306 db.example.com` has grown into *"I have five of those, my laptop sleeps, my Wi-Fi flakes, and I want them all back when I open the lid."*
 
-- **Declarative**: tunnels live in `configs.toml`, not in shell history or terminal panes.
+- **Declarative**: tunnels live in `config.toml`, not in shell history or terminal panes.
 - **No host config duplication**: host info (`HostName` / `User` / `Port` / `IdentityFile`) is read straight from `~/.ssh/config` — you reference aliases.
 - **Auto-reconnect**: configurable backoff per tunnel; one drop doesn't take the others down.
 - **Both directions in one schema**: local-to-remote (`ssh -L`) and remote-to-local (`ssh -R`).
@@ -43,7 +43,7 @@ Host my-db
   IdentityFile ~/.ssh/id_rsa
 ```
 
-**3. Write `configs.toml`** in the current directory:
+**3. Write `config.toml`** in the current directory:
 
 ```toml
 [[channels]]
@@ -62,15 +62,15 @@ ssh-channels-hub start          # Ctrl+C to stop
 
 Now `mysql -h 127.0.0.1 -P 3306` goes through the tunnel.
 
-> **Tip:** `ssh-channels-hub generate -o configs.toml` scaffolds one commented-out `[[channels]]` block per alias in your SSH config — uncomment and fill in ports. Or `cp configs.example.toml configs.toml` for an annotated template.
+> **Tip:** `ssh-channels-hub generate -o config.toml` scaffolds one commented-out `[[channels]]` block per alias in your SSH config — uncomment and fill in ports. Or `cp config.example.toml config.toml` for an annotated template.
 
 ## Configuration
 
-`configs.toml` is looked up in this order (first existing wins):
+`config.toml` is looked up in this order (first existing wins):
 
 | Platform | Path |
 |---|---|
-| Current directory (always tried first) | `./configs.toml` |
+| Current directory (always tried first) | `./config.toml` |
 | Linux / macOS | `~/.config/ssh-channels-hub/config.toml` |
 | Windows | `%APPDATA%\ssh-channels-hub\config.toml` |
 
@@ -160,9 +160,9 @@ Full field reference: [docs/configuration.md](docs/configuration.md).
 | `status` | Show state, active vs total channels, PID, and the channel list. |
 | `test` | Probe each configured `local->remote` listener to confirm the tunnel is alive. `remote->local` channels are skipped — verify those server-side. |
 | `validate` | Resolve every channel against `~/.ssh/config` and report any problems. |
-| `generate -o configs.toml` | Scaffold a `configs.toml` from existing SSH config aliases. |
+| `generate -o config.toml` | Scaffold a `config.toml` from existing SSH config aliases. |
 
-All commands accept `--config /path/to/configs.toml` to point at a non-default file, and `--debug` for verbose logging.
+All commands accept `--config /path/to/config.toml` to point at a non-default file, and `--debug` for verbose logging.
 
 ## Troubleshooting
 

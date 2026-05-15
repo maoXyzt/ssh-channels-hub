@@ -11,7 +11,7 @@
 cargo run test
 
 # 使用指定的配置文件
-cargo run test -c configs.toml
+cargo run test -c config.toml
 ```
 
 这个命令会：
@@ -43,7 +43,7 @@ Testing channel 'ssc_dev:3923' (local:80 -> 127.0.0.1:3923)... ✗ Failed to con
 ✗ Some channels failed the connection test
 
 Troubleshooting tips:
-1. Make sure the service is running: cargo run start -c configs.toml
+1. Make sure the service is running: cargo run start -c config.toml
 2. Check if ports are listening: netstat -an | grep LISTEN
 3. Verify SSH connection is established (check logs with --debug)
 4. Ensure remote service is accessible from the SSH server
@@ -111,7 +111,7 @@ netstat -ano | findstr :80
 启动服务时使用 `--debug` 标志查看详细日志：
 
 ```bash
-cargo run start -c configs.toml --debug
+cargo run start -c config.toml --debug
 ```
 
 日志会显示：
@@ -132,7 +132,7 @@ cargo run start -c configs.toml --debug
 使用 `status` 命令查看服务状态：
 
 ```bash
-cargo run status -c configs.toml
+cargo run status -c config.toml
 ```
 
 这会显示：
@@ -154,7 +154,7 @@ cargo run status -c configs.toml
 
 **解决方法：**
 
-- 确保服务正在运行：`cargo run start -c configs.toml`
+- 确保服务正在运行：`cargo run start -c config.toml`
 - 检查 SSH 连接是否成功（查看日志）
 - 验证远程服务是否可以从 SSH 服务器访问
 - 检查防火墙设置
@@ -222,7 +222,7 @@ Failed to open direct-tcpip channel
 #!/bin/bash
 # test-channels.sh
 
-CONFIG_FILE="configs.toml"
+CONFIG_FILE="config.toml"
 
 echo "Starting service..."
 cargo run start -c "$CONFIG_FILE" &
