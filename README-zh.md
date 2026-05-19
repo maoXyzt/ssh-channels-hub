@@ -158,7 +158,7 @@ local     = "80"                # 收到的连接桥接到本机 127.0.0.1:80
 | `start -D` / `--daemon` | 后台 daemon 模式,与终端分离。 |
 | `stop` | 通过 IPC 通知运行中的进程优雅退出。 |
 | `restart` | 停止当前服务,再以 daemon 重新启动。 |
-| `status` | 显示服务状态、已激活/总 channel 数、PID、channel 列表。 |
+| `status` | 显示服务状态、每条 channel 实时健康度(Connected / Reconnecting / Failed / Stopped)、PID、端点信息。加 `--watch / -w` 进入常驻刷新模式,刷新间隔由 `--interval / -n` 控制(秒,默认 2)。 |
 | `test` | 测试每个 `local->remote` 的本地监听端口,确认隧道是通的。`remote->local` 的 channel 跳过,需要在服务器端实际连接验证。 |
 | `validate` | 把每个 channel 对照 `~/.ssh/config` 解析,列出问题。 |
 | `generate -o config.toml` | 根据 SSH config alias 生成 `config.toml` 脚手架。 |

@@ -196,6 +196,29 @@ pub enum ServiceState {
     Stopping,
     Error(String),
 }
+
+// 每条 channel 的实时健康度,由 SshManager 的 connect 任务写入,
+// 由 ServiceManager::status() 读出供 CLI 渲染。
+pub enum ChannelHealth {
+    Stopped,
+    Connecting { attempt: u32 },
+    Connected,
+    Reconnecting { attempt: u32, last_error: String },
+    Failed { error: String },
+}
+
+pub struct ChannelStatus {
+    pub name: String,
+    pub direction: Direction,
+    pub local: String,           // host:port
+    pub remote: String,
+    pub health: ChannelHealth,
+}
+
+pub struct ServiceStatus {
+    pub state: ServiceState,
+    pub channels: Vec<ChannelStatus>,
+}
 ```
 
 **主要功能**:
@@ -203,7 +226,7 @@ pub enum ServiceState {
 - `start()`: 启动所有 channels
 - `stop()`: 停止所有 channels
 - `restart()`: 重启服务
-- `status()`: 获取服务状态
+- `status()`: 遍历每个 `SshManager.snapshot()`,返回包含每条 channel 实时健康度的 `ServiceStatus`(供 `status` 命令和 `--watch` 模式渲染)
 
 **设计特点**:
 
@@ -229,29 +252,40 @@ pub struct SshManager {
     config: ChannelConfig,
     reconnection_config: ReconnectionConfig,
     shutdown_tx: Option<mpsc::Sender<()>>,
+    cancellation_token: Option<CancellationToken>,
+    // 实时健康度,与 spawn 出去的 connect 任务共享。
+    // 使用 std::sync::Mutex(不跨 await),写者:spawn 任务的状态转移
+    // 与 backon 的 .notify 钩子;读者:SshManager::snapshot()。
+    health: Arc<std::sync::Mutex<ChannelHealth>>,
 }
 
-struct ClientHandler;
+struct ClientHandler;              // 终点 SSH 会话
+struct ReverseForwardHandler { … } // ssh -R 服务端推回的 forwarded-tcpip
+struct JumpClientHandler { … }     // ProxyJump 跳板专用,严格校验 known_hosts
 ```
 
 **主要功能**:
 
 1. **连接管理**:
-   - `establish_connection()`: 建立 SSH 连接
-   - `connect_ssh_session()`: 连接到 SSH 服务器
-   - `load_secret_key()`: 加载私钥文件
+   - `establish_connection()`: 走完跳板链 + 终点认证 + 启动 channel-side 服务(listener bind / tcpip-forward)
+   - `connect_via_chain()`: 按顺序把 `ProxyJump` 链全部认证起来,跳板 handle 由调用者持有以保证生命周期
+   - `load_secret_key()` / `load_jump_key()`: 加载私钥(后者强制拒绝 passphrase 加密的 key)
 
-2. **channel 管理**:
-   - `open_session_channel()`: 打开会话 channel
-   - `open_direct_tcpip_channel()`: 打开端口转发 channel
+2. **重连逻辑**:
+   - `connect_and_manage_channel()`: 用 `backon` 做指数退避重试,`.notify` 钩子把状态切到 `Reconnecting{ attempt, last_error }`,外层循环负责 max_retries 用完后的 1 秒重置
 
-3. **重连逻辑**:
-   - `connect_and_manage_channel()`: 带重试的连接管理
-   - 使用 `backon` 实现重试策略
+3. **生命周期管理**:
+   - `start()`: spawn 出连接任务,初始化 `health = Connecting{1}`
+   - `stop()`: shutdown + cancel,把 `health` 置 `Stopped`
+   - `snapshot()`: 同步返回当前 channel 的 `ChannelStatus`(名字 / 方向 / 端点 / 健康度),供 `ServiceManager::status` 调用
 
-4. **生命周期管理**:
-   - `start()`: 启动管理器
-   - `stop()`: 停止管理器
+4. **状态写入点**(谁把 ChannelHealth 设成谁):
+   - 循环入口 → `Connecting{1}`
+   - backon `.notify` 钩子 → `Reconnecting{n, err}`
+   - `run_direct_tcpip_listener` 在 `TcpListener::bind` 成功后 → `Connected`
+   - `drive_forwarded_tcpip` 在 `tcpip_forward` 返回 Ok 后 → `Connected`
+   - 单次 retry cycle 用尽 → `Failed{err}`(外层 1s 后重置为 `Connecting{1}`)
+   - shutdown / cancel → `Stopped`
 
 **设计特点**:
 

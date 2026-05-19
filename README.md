@@ -158,7 +158,7 @@ Full field reference: [docs/configuration.md](docs/configuration.md).
 | `start -D` / `--daemon` | Spawn a detached background process. |
 | `stop` | Tell the running process to exit gracefully (via IPC). |
 | `restart` | Stop the running service, then re-start as daemon. |
-| `status` | Show state, active vs total channels, PID, and the channel list. |
+| `status` | Show service state, per-channel health (Connected / Reconnecting / Failed / Stopped), PID, and endpoints. Add `--watch / -w` to refresh every `--interval / -n` seconds (default 2). |
 | `test` | Probe each configured `local->remote` listener to confirm the tunnel is alive. `remote->local` channels are skipped — verify those server-side. |
 | `validate` | Resolve every channel against `~/.ssh/config` and report any problems. |
 | `generate -o config.toml` | Scaffold a `config.toml` from existing SSH config aliases. |

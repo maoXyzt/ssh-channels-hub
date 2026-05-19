@@ -8,7 +8,8 @@
 2. [远程端口转发](#2-远程端口转发类-ssh--r)
 3. [常见场景](#3-常见场景)
 4. [多 channels 管理](#4-多-channels-管理)
-5. [故障排查](#5-故障排查)
+5. [实时监控隧道健康](#5-实时监控隧道健康)
+6. [故障排查](#6-故障排查)
 
 ---
 
@@ -279,13 +280,70 @@ use_exponential_backoff = true
 
 - 所有 channels 在 `start` 时一起建立,各自独立重连
 - 每个 channel 独立建一条 SSH session(即便复用同一 alias)
-- `status` 可查看全部 channels 的状态
+- `status` 可查看每条 channel 的实时健康度(下一节)
 
 ---
 
-## 5. 故障排查
+## 5. 实时监控隧道健康
 
-### 5.1 连接失败
+`status` 会打印每条 channel 的当前健康状态,而不是简单的「manager 是否起来」:
+
+| 状态 | 含义 |
+|---|---|
+| `Connected` | SSH 会话已认证、本地 listener 已 bind / `tcpip-forward` 已注册 —— 真正在转发流量 |
+| `Connecting #n` | 第 n 次连接尝试还在进行(认证、建链) |
+| `Reconnecting #n` | 上一次断了,正在 backoff 窗口里等待第 n 次重试;后面会附最近一次失败原因 |
+| `Failed` | 配置的 `max_retries` 用完(只有显式设非 0 才会出现),外层循环 1 秒后会重置成 `Connecting #1` |
+| `Stopped` | 没启动或已停止 |
+
+### 5.1 一次性查看
+
+```bash
+ssh-channels-hub status
+```
+
+典型输出:
+
+```text
+📋  Service Status
+  State:         ● Running
+  Channels:      2/3 connected
+  Config:        /Users/me/.config/ssh-channels-hub/config.toml
+  PID:           34218
+
+  Channels (3):
+  • db        L→R 127.0.0.1:3306 → db.internal:3306    ● Connected
+  • redis     L→R 127.0.0.1:6379 → redis.internal:6379 ● Reconnecting #3
+      ↳ io error: connection refused (os error 61)
+  • web       L→R 127.0.0.1:8080 → web.internal:80     ● Connected
+```
+
+聚合行 `2/3 connected` 全绿 / 部分黄 / 全红会用颜色区分;失败的 channel 会在第二行 dim 显示最近一次失败原因,免去翻 `--debug` 日志的麻烦。
+
+### 5.2 常驻监控
+
+调试一条不稳定的隧道、或想观察重连恢复过程时:
+
+```bash
+ssh-channels-hub status --watch          # 每 2 秒刷新一次
+ssh-channels-hub status -w -n 5          # 每 5 秒
+ssh-channels-hub status -w -n 1          # 最快每秒
+```
+
+行为:
+
+- 用 ANSI 清屏在原地重画,刷新感像 `watch(1)`。
+- `Ctrl+C` 退出,终端恢复正常。
+- 如果 daemon 还没起来,会一直显示「Service is not running」并持续轮询 —— 你可以在另一个终端 `start -D` 然后回这边看 `Stopped → Connecting → Connected` 的变化。
+- 渲染开销可忽略;`-n 1` 也不会给 daemon 造成压力(IPC 是单次 TCP loopback 读写)。
+
+注意:Windows 上需要支持 ANSI 转义的终端(Windows Terminal / PowerShell 7+),老的 `cmd.exe` 会看到追加输出而不是原地刷新。
+
+---
+
+## 6. 故障排查
+
+### 6.1 连接失败
 
 先用原生 ssh 验证 SSH config 本身没问题:
 
@@ -295,7 +353,7 @@ ssh <alias>                  # 应能成功登录
 
 如果原生 ssh 都连不上,问题在 SSH config / 密钥 / 网络,与本工具无关。
 
-### 5.2 端口被占用
+### 6.2 端口被占用
 
 `start` 会预检本地端口。报错例:
 
@@ -313,7 +371,7 @@ lsof -i :18080
 netstat -ano | findstr :18080
 ```
 
-### 5.3 配置错误
+### 6.3 配置错误
 
 ```bash
 ssh-channels-hub validate --debug
@@ -330,7 +388,7 @@ ssh-channels-hub validate --debug
 - `ProxyJump '... IdentityFile '...' does not exist on disk`(validate 时)→ 路径解析出来了但文件不存在,补上文件或改 `IdentityFile` 指向
 - `ProxyJump '...': no entry for ...:port in known_hosts`(validate warning)→ 跑一次 `ssh-keyscan` 或手动 `ssh <alias>` 让 OpenSSH 写入
 
-### 5.4 端口转发不工作
+### 6.4 端口转发不工作
 
 1. 在远程服务器上验证目标服务存在:`curl http://127.0.0.1:8080`
 2. `ssh-channels-hub start --debug` 看 SSH 握手与 channel 建立日志
