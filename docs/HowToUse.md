@@ -191,6 +191,53 @@ remote    = "80"
 
 注意防火墙与安全风险。
 
+### 3.5 通过跳板访问内网 host(ProxyJump)
+
+跳板和目标都写成 `~/.ssh/config` 的 `Host` 别名,在目标的 `ProxyJump` 字段引用跳板别名。多跳就用逗号串起来(顺序从外到内)。
+
+`~/.ssh/config`:
+```
+Host bastion
+  HostName bastion.example.com
+  User opsadmin
+  IdentityFile ~/.ssh/id_ed25519
+
+Host inner-db
+  HostName 10.0.5.20
+  User dbuser
+  IdentityFile ~/.ssh/id_ed25519
+  ProxyJump bastion
+```
+
+`config.toml` 不用感知跳板,跟普通 channel 一样写:
+
+```toml
+[[channels]]
+name      = "inner-db-tunnel"
+hostname  = "inner-db"
+direction = "local->remote"
+local     = "3306"
+remote    = "3306"
+```
+
+效果:本机 `127.0.0.1:3306` ⇄ `bastion` ⇄ `10.0.5.20:3306`。
+
+**前置准备**(本工具对跳板走严格 `known_hosts` 校验,不做 TOFU 自动追加):
+
+```bash
+ssh-keyscan -p 22 bastion.example.com >> ~/.ssh/known_hosts
+# 或者一次性手动登入让 OpenSSH 帮你写
+ssh bastion
+```
+
+`ssh-channels-hub validate` 会前置检查每个跳板的 IdentityFile 是否存在、`known_hosts` 是否已有条目,提早暴露问题。
+
+**限制速览**(完整说明见 [configuration.md §3.4 「ProxyJump 限制」](./configuration.md#34-host-info-从哪里来)):
+
+- `ProxyJump` 的值必须是已经定义的 `Host` 别名,**不接受**原始的 `user@host:port` 形式。
+- 跳板仅支持 **publickey 认证**;`IdentityFile` 不能被 passphrase 加密(守护进程没法交互输入)。
+- 跳板别名自己的 `ProxyJump` 不会递归生效;要多级跳板,把所有跳板按顺序写进**目标 host** 的 `ProxyJump`。
+
 ---
 
 ## 4. 多 channels 管理
@@ -277,6 +324,11 @@ ssh-channels-hub validate --debug
 - `references host alias 'X', but no Host X block exists` → SSH config 缺该 alias
 - `missing HostName / User` → SSH config 中该 alias 不完整
 - `has no IdentityFile ... and no [auth.X].password` → 二选一补全
+- `has ProxyJump 'user@host:port' written as a raw target` → 把跳板写成 `Host` 别名,然后 `ProxyJump` 引用别名
+- `ProxyJump alias '...' ... no IdentityFile and no default key ... exists` → 给跳板别名补 `IdentityFile`,或在 `~/.ssh/` 放一个常见名字的 key
+- `ProxyJump alias '...' uses encrypted IdentityFile` → 跳板的 key 不能加密;换未加密 key 或解密
+- `ProxyJump '... IdentityFile '...' does not exist on disk`(validate 时)→ 路径解析出来了但文件不存在,补上文件或改 `IdentityFile` 指向
+- `ProxyJump '...': no entry for ...:port in known_hosts`(validate warning)→ 跑一次 `ssh-keyscan` 或手动 `ssh <alias>` 让 OpenSSH 写入
 
 ### 5.4 端口转发不工作
 

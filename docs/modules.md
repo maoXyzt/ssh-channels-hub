@@ -69,7 +69,7 @@ pub enum Commands {
 
 **职责**: 加载 `config.toml`、解析、并联合 `~/.ssh/config` 构造运行时 ChannelConfig。
 
-host info(HostName / User / Port / IdentityFile)由 `ssh_config.rs` 从 `~/.ssh/config` 读出,`config.rs` 只负责 channels、auth 覆盖、重连策略。
+host info(HostName / User / Port / IdentityFile / ProxyJump)由 `ssh_config.rs` 从 `~/.ssh/config` 读出,`config.rs` 只负责 channels、auth 覆盖、重连策略,以及把 `ProxyJump` 链解析成跳板配置。
 
 **核心数据结构**:
 
@@ -111,12 +111,23 @@ pub struct ChannelConfig {
     pub port: u16,                             // resolved from SSH Port, default 22
     pub username: String,                      // resolved from SSH User
     pub auth: AuthConfig,
-    pub params: ChannelTypeParams,             // DirectTcpIp / ForwardedTcpIp / Session
+    pub params: ChannelTypeParams,             // DirectTcpIp / ForwardedTcpIp
+    pub proxy_jumps: Vec<JumpHopConfig>,       // 解析后的 ProxyJump 链(顺序敏感,空 = 直连)
 }
 
 pub enum AuthConfig {
     Password { password: String },
     Key { key_path: PathBuf, passphrase: Option<String> },
+}
+
+// 单个跳板的运行时配置。仅来源于 ~/.ssh/config 的 Host 别名 + IdentityFile —
+// `config.toml` 不允许为跳板单独配 auth(跳板只支持 publickey)。
+pub struct JumpHopConfig {
+    pub alias: String,                         // ssh_config 中的 Host alias
+    pub host: String,                          // HostName
+    pub port: u16,                             // Port,默认 22
+    pub username: String,                      // User
+    pub key_path: PathBuf,                     // 显式 IdentityFile > Host * > 默认 key
 }
 ```
 
@@ -125,8 +136,9 @@ pub enum AuthConfig {
 - `AppConfig::from_file()`: 加载并反序列化
 - `AppConfig::default_path()`: 获取默认 config.toml 路径
 - `AppConfig::ssh_config_path()`: 计算 SSH config 实际路径(`ssh_config` 字段优先,否则 `~/.ssh/config`)
-- `AppConfig::build_channels()`: 解析 SSH config、按 alias 查表、套用 auth 覆盖,构造 `Vec<ChannelConfig>`
+- `AppConfig::build_channels()`: 解析 SSH config、按 alias 查表、套用 auth 覆盖、解析 `ProxyJump` 链(`resolve_jump_chain`),构造 `Vec<ChannelConfig>`
 - `AppConfig::generate_scaffold()`: 从 SSH config 条目渲染一份注释掉的 `config.toml` 文本,供 `generate` 子命令使用
+- `check_jump_preflight()`: 跳板环境前置检查 —— IdentityFile 文件是否存在(error)、跳板主机是否在 `~/.ssh/known_hosts`(warning);供 `validate` 命令调用
 
 **auth 解析规则(`resolve_auth`)**:
 
