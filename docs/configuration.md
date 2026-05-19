@@ -106,7 +106,9 @@ key 是 SSH config 里的 alias 字符串。**没有覆盖需求的 host 不需�
 | `Host *` | 通配的默认值会被继承到其它 Host |
 | `ProxyJump` | 可选。仅支持「指向 Host 别名」的写法,详见下文「ProxyJump 限制」 |
 
-**不支持**(SSH 客户端有,工具没有):`ProxyCommand` / `ControlMaster` / `Include` / `Match` 等。
+**不支持**(SSH 客户端有,工具没有):`ControlMaster` / `Include` / `Match` 等。
+
+**`ProxyCommand` 兼容(限定形态)**:OpenSSH 7.3 之前没有 `ProxyJump`,常见做法是 `ProxyCommand ssh <alias> -W %h:%p`。本工具仅识别这一种形态(`ssh -W %h:%p <alias>` 同样接受),并把它当作 `ProxyJump <alias>` 处理 —— 所有 ProxyJump 限制(见下)同样适用。其它任何 `ProxyCommand` 写法(比如 `nc`、`-o ...` 额外选项、其它 ssh 子命令)一律报错,提示用户升级 OpenSSH 并改用 `ProxyJump`。当 `ProxyJump` 已显式设置时,`ProxyCommand` 被忽略。
 
 **ProxyJump 限制**:
 
@@ -315,6 +317,10 @@ alias 的 `Host` 块里缺 `HostName` 或 `User`。补上即可。`User` 可以�
 ### `Host 'X' has no IdentityFile in SSH config and no [auth.X].password in config.toml`
 
 二选一:在 `~/.ssh/config` 给该 host 加 `IdentityFile`,或在 `config.toml` 加 `[auth.X] password = "..."`。
+
+### `Channel host 'X' has 'ProxyCommand ...' which this tool does not understand`
+
+`ProxyCommand` 仅兼容 `ssh <alias> -W %h:%p` 这一种写法(以及参数顺序换一下的 `ssh -W %h:%p <alias>`)。如果你的写法带其它选项(`-q`、`-o ...`)、用其它工具(`nc`、`socat`)或别的 ssh 子命令,本工具不会去解析。最干净的做法是升级到 OpenSSH 7.3+ 并改用 `ProxyJump <alias>`;不能升级的话,把 `ProxyCommand` 改写成上面那一种形态。
 
 ### `Channel host 'X' has ProxyJump 'user@host:port' written as a raw target`
 

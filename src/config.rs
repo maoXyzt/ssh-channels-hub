@@ -415,7 +415,33 @@ impl AppConfig {
       let override_ = self.auth.get(&conn.hostname);
       let auth = resolve_auth(&conn.hostname, entry, override_)?;
 
-      let proxy_jumps = resolve_jump_chain(&conn.hostname, entry, &by_alias, &default_keys)?;
+      // Honor ProxyCommand `ssh <alias> -W %h:%p` as a stand-in for ProxyJump
+      // on SSH configs that predate OpenSSH 7.3. Only when ProxyJump is empty
+      // — explicit ProxyJump always wins. Any other ProxyCommand shape errors.
+      let entry_for_jump_resolution: ssh_config::SshConfigEntry;
+      let entry_to_resolve: &ssh_config::SshConfigEntry = if !entry.proxy_jump.is_empty() {
+        entry
+      } else if let Some(cmd) = entry.proxy_command.as_deref() {
+        let alias = parse_proxy_command_to_alias(cmd).ok_or_else(|| {
+          AppError::Config(format!(
+            "Channel host '{}' has `ProxyCommand {}`, which this tool does not understand. \
+             Only one ProxyCommand shape is supported: `ssh <alias> -W %h:%p` (treated as \
+             ProxyJump <alias>). Upgrade OpenSSH and switch to `ProxyJump <alias>`, or \
+             rewrite the directive into that exact form.",
+            conn.hostname, cmd
+          ))
+        })?;
+        entry_for_jump_resolution = ssh_config::SshConfigEntry {
+          proxy_jump: vec![alias],
+          ..entry.clone()
+        };
+        &entry_for_jump_resolution
+      } else {
+        entry
+      };
+
+      let proxy_jumps =
+        resolve_jump_chain(&conn.hostname, entry_to_resolve, &by_alias, &default_keys)?;
 
       let params = match conn.direction {
         Direction::LocalToRemote => ChannelTypeParams::DirectTcpIp {
@@ -505,6 +531,33 @@ impl AppConfig {
 
     out
   }
+}
+
+/// Recognize a single hard-coded ProxyCommand shape as a ProxyJump stand-in.
+///
+/// Supported: `ssh <alias> -W %h:%p` and `ssh -W %h:%p <alias>` (both ASCII
+/// whitespace-separated; no extra flags). Returns `Some(alias)` on match,
+/// `None` for any other shape. Deliberately narrow — the caller turns `None`
+/// into a clear, actionable error.
+fn parse_proxy_command_to_alias(cmd: &str) -> Option<String> {
+  let tokens: Vec<&str> = cmd.split_whitespace().collect();
+  if tokens.len() != 4 || tokens[0] != "ssh" {
+    return None;
+  }
+  // The two accepted orderings differ only in where `-W %h:%p` sits.
+  // Anywhere `-W` appears, the next token must be `%h:%p` and the remaining
+  // token must be the alias (a non-flag bareword).
+  let w_pos = tokens.iter().position(|t| *t == "-W")?;
+  let percent_pos = w_pos + 1;
+  if percent_pos >= tokens.len() || tokens[percent_pos] != "%h:%p" {
+    return None;
+  }
+  let alias_pos = (1..tokens.len()).find(|&i| i != w_pos && i != percent_pos)?;
+  let alias = tokens[alias_pos];
+  if alias.is_empty() || alias.starts_with('-') || alias.contains('@') || alias.contains(':') {
+    return None;
+  }
+  Some(alias.to_string())
 }
 
 /// Resolve the ordered ProxyJump chain for a channel.
@@ -818,6 +871,24 @@ mod tests {
       port,
       identity_file,
       proxy_jump,
+      proxy_command: None,
+    }
+  }
+
+  fn make_entry_with_proxy_command(
+    host: &str,
+    hostname: Option<&str>,
+    user: Option<&str>,
+    proxy_command: Option<&str>,
+  ) -> ssh_config::SshConfigEntry {
+    ssh_config::SshConfigEntry {
+      host: host.to_string(),
+      hostname: hostname.map(String::from),
+      user: user.map(String::from),
+      port: None,
+      identity_file: None,
+      proxy_jump: vec![],
+      proxy_command: proxy_command.map(String::from),
     }
   }
 
@@ -1019,6 +1090,100 @@ mod tests {
       msg.contains("missing `User`"),
       "expected missing-user message, got: {msg}"
     );
+  }
+
+  // --- parse_proxy_command_to_alias ---
+
+  #[test]
+  fn proxy_command_accepts_alias_before_w_flag() {
+    assert_eq!(
+      parse_proxy_command_to_alias("ssh bastion -W %h:%p"),
+      Some("bastion".to_string())
+    );
+  }
+
+  #[test]
+  fn proxy_command_accepts_alias_after_w_flag() {
+    assert_eq!(
+      parse_proxy_command_to_alias("ssh -W %h:%p bastion"),
+      Some("bastion".to_string())
+    );
+  }
+
+  #[test]
+  fn proxy_command_tolerates_extra_whitespace() {
+    assert_eq!(
+      parse_proxy_command_to_alias("  ssh   bastion   -W   %h:%p  "),
+      Some("bastion".to_string())
+    );
+  }
+
+  #[test]
+  fn proxy_command_rejects_extra_flags() {
+    assert!(parse_proxy_command_to_alias("ssh -q bastion -W %h:%p").is_none());
+    assert!(parse_proxy_command_to_alias("ssh bastion -W %h:%p -q").is_none());
+  }
+
+  #[test]
+  fn proxy_command_rejects_non_ssh_executable() {
+    assert!(parse_proxy_command_to_alias("nc bastion %p").is_none());
+    assert!(parse_proxy_command_to_alias("/usr/bin/ssh bastion -W %h:%p").is_none());
+  }
+
+  #[test]
+  fn proxy_command_rejects_raw_user_host_form() {
+    // The alias must be a bareword: `admin@host` or `host:22` shouldn't match
+    // because downstream resolver only accepts Host aliases.
+    assert!(parse_proxy_command_to_alias("ssh admin@bastion -W %h:%p").is_none());
+    assert!(parse_proxy_command_to_alias("ssh bastion:2222 -W %h:%p").is_none());
+  }
+
+  #[test]
+  fn proxy_command_rejects_wrong_w_target() {
+    assert!(parse_proxy_command_to_alias("ssh bastion -W %h").is_none());
+    assert!(parse_proxy_command_to_alias("ssh bastion -W some:port").is_none());
+  }
+
+  #[test]
+  fn proxy_command_rejects_alternate_tools() {
+    assert!(parse_proxy_command_to_alias("nc -X connect bastion 22").is_none());
+    assert!(parse_proxy_command_to_alias("ssh-keygen bastion").is_none());
+  }
+
+  // build_channels-side smoke: a ProxyCommand alias is treated as ProxyJump
+  // and resolves through resolve_jump_chain like any normal alias would.
+  #[test]
+  fn proxy_command_threads_through_to_resolve_jump_chain_via_clone() {
+    use crate::ssh_config;
+    let bastion_key = PathBuf::from("/keys/bastion");
+    let bastion = make_entry(
+      "bastion",
+      Some("bastion.example.com"),
+      Some("bu"),
+      None,
+      Some(bastion_key.clone()),
+      vec![],
+    );
+    let target = make_entry_with_proxy_command(
+      "t",
+      Some("t.example.com"),
+      Some("u"),
+      Some("ssh bastion -W %h:%p"),
+    );
+    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
+      [("t", &target), ("bastion", &bastion)].into_iter().collect();
+
+    // Simulate the build_channels rewrite: turn proxy_command into proxy_jump
+    // and feed the clone to resolve_jump_chain.
+    let alias = parse_proxy_command_to_alias(target.proxy_command.as_ref().unwrap()).unwrap();
+    let target_eff = ssh_config::SshConfigEntry {
+      proxy_jump: vec![alias],
+      ..target.clone()
+    };
+    let chain = resolve_jump_chain("t", &target_eff, &by_alias, &[]).unwrap();
+    assert_eq!(chain.len(), 1);
+    assert_eq!(chain[0].alias, "bastion");
+    assert_eq!(chain[0].host, "bastion.example.com");
   }
 
   // --- check_jump_preflight ---

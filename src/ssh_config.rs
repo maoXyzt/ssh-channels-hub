@@ -17,6 +17,11 @@ pub struct SshConfigEntry {
   pub identity_file: Option<PathBuf>,
   /// ProxyJump chain (comma-separated alias list, in order). Empty when absent.
   pub proxy_jump: Vec<String>,
+  /// Raw `ProxyCommand` directive value (untouched). The resolver in
+  /// `config.rs` accepts a single hard-coded shape — `ssh <alias> -W %h:%p` —
+  /// as a fallback for SSH configs that predate `ProxyJump` (OpenSSH 7.3+).
+  /// Any other shape is rejected with a clear error.
+  pub proxy_command: Option<String>,
 }
 
 /// Default values from Host "*" entry
@@ -26,6 +31,7 @@ struct SshConfigDefaults {
   user: Option<String>,
   identity_file: Option<PathBuf>,
   proxy_jump: Vec<String>,
+  proxy_command: Option<String>,
 }
 
 /// Parse SSH config file
@@ -108,6 +114,7 @@ fn parse_ssh_config_content(content: &str) -> Result<Vec<SshConfigEntry>> {
         if defaults.proxy_jump.is_empty() {
           defaults.proxy_jump = new.proxy_jump;
         }
+        defaults.proxy_command = defaults.proxy_command.take().or(new.proxy_command);
       } else {
         for alias in aliases.iter() {
           if let Some(entry) = build_entry(alias, cfg, defaults) {
@@ -240,6 +247,7 @@ fn extract_defaults(config: &HashMap<String, String>) -> SshConfigDefaults {
       .get("proxyjump")
       .map(|v| parse_proxy_jump_value(v))
       .unwrap_or_default(),
+    proxy_command: config.get("proxycommand").cloned(),
   }
 }
 
@@ -309,6 +317,11 @@ fn build_entry(
     .map(|v| parse_proxy_jump_value(v))
     .unwrap_or_else(|| defaults.proxy_jump.clone());
 
+  let proxy_command = config
+    .get("proxycommand")
+    .cloned()
+    .or_else(|| defaults.proxy_command.clone());
+
   Some(SshConfigEntry {
     host: host.to_string(),
     hostname: Some(hostname),
@@ -316,6 +329,7 @@ fn build_entry(
     user,
     identity_file,
     proxy_jump,
+    proxy_command,
   })
 }
 
@@ -681,6 +695,42 @@ Host self-jumped
     // explicit `ProxyJump` on the entry overrides the default.
     let other = entries.iter().find(|e| e.host == "self-jumped").unwrap();
     assert_eq!(other.proxy_jump, vec!["other-bastion".to_string()]);
+  }
+
+  #[test]
+  fn proxy_command_is_stored_verbatim() {
+    // The parser is permissive; config.rs decides whether the value is one
+    // of the supported shapes.
+    let content = r#"
+Host target
+    HostName target.example.com
+    User u
+    ProxyCommand ssh bastion -W %h:%p
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+      entries[0].proxy_command.as_deref(),
+      Some("ssh bastion -W %h:%p")
+    );
+  }
+
+  #[test]
+  fn proxy_command_inherits_from_wildcard() {
+    let content = r#"
+Host *
+    ProxyCommand ssh global-bastion -W %h:%p
+
+Host target
+    HostName target.example.com
+    User u
+"#;
+    let entries = parse_ssh_config_content(content).unwrap();
+    let target = entries.iter().find(|e| e.host == "target").unwrap();
+    assert_eq!(
+      target.proxy_command.as_deref(),
+      Some("ssh global-bastion -W %h:%p")
+    );
   }
 
   #[test]
