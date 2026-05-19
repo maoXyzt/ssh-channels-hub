@@ -295,6 +295,10 @@ ssh-channels-hub validate --config /path/to/config.toml
 - 该 alias 有 `IdentityFile` 或 `[auth.<alias>].password` 二选一
 - `direction` 取值合法
 - `local` / `remote` 是合法的 `port` 或 `host:port`
+- 如果 channel 走 `ProxyJump`:每一跳的别名都已定义、有 `User` 和 `HostName`、有可用的 publickey(显式 `IdentityFile`、`Host *` 全局,或 `~/.ssh/id_*` 默认 key 其一)
+- 如果有 `ProxyJump`,还会做两项环境前置检查:
+  - **失败**:跳板的 `IdentityFile` 文件确实不存在(键路径已解析但落不到磁盘)
+  - **警告**:跳板主机在 `~/.ssh/known_hosts` 中没有对应记录(运行时会被严格校验拒绝)
 
 输出会列出每个 channel 解析后的 `user@host:port` + 转发参数。
 

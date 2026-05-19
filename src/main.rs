@@ -526,6 +526,31 @@ async fn handle_validate(config_path: Option<std::path::PathBuf>) -> AnyhowResul
     }
   };
 
+  // ProxyJump environment checks (IdentityFile on disk, known_hosts entries).
+  // Errors fail validation; warnings are printed but pass.
+  let preflight = config::check_jump_preflight(&channels, None);
+
+  if !preflight.warnings.is_empty() {
+    println!();
+    for w in &preflight.warnings {
+      ui::warn(w);
+    }
+  }
+
+  if !preflight.errors.is_empty() {
+    println!();
+    for e in &preflight.errors {
+      ui::fail(e);
+    }
+    ui::hint(
+      "Fix the listed IdentityFile paths in ~/.ssh/config (or place the key file at the resolved path).",
+    );
+    return Err(anyhow::anyhow!(
+      "ProxyJump preflight failed: {} error(s)",
+      preflight.errors.len()
+    ));
+  }
+
   println!();
   ui::success(format!(
     "Configuration is valid — {} channel(s) resolved.",

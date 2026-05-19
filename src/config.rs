@@ -586,6 +586,107 @@ fn resolve_jump_chain(
   Ok(chain)
 }
 
+/// Outcome of `check_jump_preflight`: things validate should surface before the
+/// daemon starts and discovers them the hard way at connect time.
+#[derive(Debug, Default, Clone)]
+pub struct JumpPreflightReport {
+  /// Hard failures — the daemon will not be able to connect. Validate should
+  /// fail the run.
+  pub errors: Vec<String>,
+  /// Soft issues — the user can fix them out-of-band (typically by running
+  /// `ssh-keyscan` or `ssh <alias>` once). Validate should print them and
+  /// still succeed.
+  pub warnings: Vec<String>,
+}
+
+/// Environmental checks for ProxyJump chains that are cheap enough to run at
+/// validate time:
+///
+/// - **Error** if a jump hop's `IdentityFile` doesn't exist on disk — the key
+///   was resolved (explicit / `Host *` / default), but the file isn't there.
+/// - **Warning** if a jump hop's `(host, port)` has no entry in `known_hosts` —
+///   the daemon's strict known_hosts check will refuse the handshake. We warn
+///   instead of erroring because it's an environment issue the user can fix
+///   without touching config, and we don't want validate to fail in CI just
+///   because the runner's known_hosts isn't seeded.
+///
+/// `known_hosts_override` lets tests point at a fixture file; pass `None` in
+/// production to use the per-user default (`~/.ssh/known_hosts`).
+pub fn check_jump_preflight(
+  channels: &[ChannelConfig],
+  known_hosts_override: Option<&std::path::Path>,
+) -> JumpPreflightReport {
+  use std::collections::HashSet;
+
+  let mut report = JumpPreflightReport::default();
+
+  // Dedupe by the natural key: same identity file (or same host:port) only
+  // gets one diagnostic regardless of how many channels share the bastion.
+  let mut seen_keys: HashSet<PathBuf> = HashSet::new();
+  let mut seen_hosts: HashSet<(String, u16)> = HashSet::new();
+
+  let known_hosts_present = match known_hosts_override {
+    Some(p) => p.exists(),
+    None => dirs::home_dir()
+      .map(|h| h.join(".ssh").join("known_hosts"))
+      .map(|p| p.exists())
+      .unwrap_or(false),
+  };
+
+  let any_jump = channels.iter().any(|c| !c.proxy_jumps.is_empty());
+  if any_jump && !known_hosts_present {
+    let where_ = known_hosts_override
+      .map(|p| p.display().to_string())
+      .unwrap_or_else(|| "~/.ssh/known_hosts".to_string());
+    report.warnings.push(format!(
+      "ProxyJump is in use but {} does not exist. \
+       Jumps will be refused at connect time (strict known_hosts). \
+       Run `ssh-keyscan -p <port> <host> >> ~/.ssh/known_hosts` for each jump host first.",
+      where_
+    ));
+  }
+
+  for ch in channels {
+    for hop in &ch.proxy_jumps {
+      let key_path = hop.key_path.clone();
+      if seen_keys.insert(key_path.clone()) && !key_path.exists() {
+        report.errors.push(format!(
+          "Channel '{}' → ProxyJump '{}': IdentityFile '{}' does not exist on disk",
+          ch.name,
+          hop.alias,
+          key_path.display()
+        ));
+      }
+
+      let host_key = (hop.host.clone(), hop.port);
+      if known_hosts_present && seen_hosts.insert(host_key) {
+        let lookup = match known_hosts_override {
+          Some(p) => russh_keys::known_host_keys_path(&hop.host, hop.port, p),
+          None => russh_keys::known_host_keys(&hop.host, hop.port),
+        };
+        match lookup {
+          Ok(v) if v.is_empty() => {
+            report.warnings.push(format!(
+              "Channel '{}' → ProxyJump '{}': no entry for {}:{} in known_hosts. \
+               Fix: `ssh-keyscan -p {} {} >> ~/.ssh/known_hosts` or `ssh {}` once.",
+              ch.name, hop.alias, hop.host, hop.port, hop.port, hop.host, hop.alias
+            ));
+          }
+          Ok(_) => {}
+          Err(e) => {
+            report.warnings.push(format!(
+              "Channel '{}' → ProxyJump '{}': failed to read known_hosts for {}:{}: {}",
+              ch.name, hop.alias, hop.host, hop.port, e
+            ));
+          }
+        }
+      }
+    }
+  }
+
+  report
+}
+
 fn resolve_auth(
   alias: &str,
   entry: &ssh_config::SshConfigEntry,
@@ -918,6 +1019,196 @@ mod tests {
       msg.contains("missing `User`"),
       "expected missing-user message, got: {msg}"
     );
+  }
+
+  // --- check_jump_preflight ---
+
+  fn make_channel(
+    name: &str,
+    proxy_jumps: Vec<JumpHopConfig>,
+  ) -> ChannelConfig {
+    ChannelConfig {
+      name: name.to_string(),
+      host: "target.example.com".to_string(),
+      port: 22,
+      username: "u".to_string(),
+      auth: AuthConfig::Password {
+        password: "x".to_string(),
+      },
+      params: ChannelTypeParams::DirectTcpIp {
+        listen_host: "127.0.0.1".to_string(),
+        local_port: 3306,
+        dest_host: "127.0.0.1".to_string(),
+        dest_port: 3306,
+      },
+      proxy_jumps,
+    }
+  }
+
+  #[test]
+  fn preflight_empty_when_no_jumps() {
+    let ch = make_channel("c", vec![]);
+    let report = check_jump_preflight(&[ch], None);
+    assert!(report.errors.is_empty());
+    assert!(report.warnings.is_empty());
+  }
+
+  #[test]
+  fn preflight_errors_on_missing_identity_file() {
+    let missing = std::env::temp_dir().join(format!(
+      "ssh-channels-hub-test-missing-{}",
+      std::process::id()
+    ));
+    // make doubly sure the path doesn't exist (don't litter, don't pre-create)
+    let _ = std::fs::remove_file(&missing);
+    let hop = JumpHopConfig {
+      alias: "bastion".to_string(),
+      host: "b.example.com".to_string(),
+      port: 22,
+      username: "u".to_string(),
+      key_path: missing.clone(),
+    };
+    let ch = make_channel("c", vec![hop]);
+
+    // Use a fake known_hosts that exists to isolate the IdentityFile path.
+    let dir = std::env::temp_dir().join(format!(
+      "ssh-channels-hub-test-kh-{}",
+      std::process::id()
+    ));
+    let _ = std::fs::create_dir_all(&dir);
+    let kh = dir.join("known_hosts");
+    std::fs::write(&kh, "").unwrap();
+
+    let report = check_jump_preflight(&[ch], Some(&kh));
+    assert_eq!(report.errors.len(), 1);
+    assert!(
+      report.errors[0].contains("IdentityFile") && report.errors[0].contains("does not exist"),
+      "got: {}",
+      report.errors[0]
+    );
+
+    let _ = std::fs::remove_file(&kh);
+    let _ = std::fs::remove_dir(&dir);
+  }
+
+  #[test]
+  fn preflight_warns_when_known_hosts_missing_overall() {
+    // Even existing IdentityFile — if known_hosts itself doesn't exist, we
+    // emit one top-level warning instead of N per-host ones.
+    let existing_key = std::env::temp_dir().join(format!(
+      "ssh-channels-hub-test-key-{}",
+      std::process::id()
+    ));
+    std::fs::write(&existing_key, "fake").unwrap();
+    let hop = JumpHopConfig {
+      alias: "bastion".to_string(),
+      host: "b.example.com".to_string(),
+      port: 22,
+      username: "u".to_string(),
+      key_path: existing_key.clone(),
+    };
+    let ch = make_channel("c", vec![hop]);
+
+    let nonexistent_kh =
+      std::env::temp_dir().join(format!("ssh-channels-hub-test-kh-nope-{}", std::process::id()));
+    let _ = std::fs::remove_file(&nonexistent_kh);
+
+    let report = check_jump_preflight(&[ch], Some(&nonexistent_kh));
+    assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+    assert!(
+      report.warnings.iter().any(|w| w.contains("does not exist")
+        && w.contains("strict known_hosts")),
+      "warnings: {:?}",
+      report.warnings
+    );
+
+    let _ = std::fs::remove_file(&existing_key);
+  }
+
+  #[test]
+  fn preflight_warns_when_jump_host_missing_from_known_hosts() {
+    let existing_key = std::env::temp_dir().join(format!(
+      "ssh-channels-hub-test-key2-{}",
+      std::process::id()
+    ));
+    std::fs::write(&existing_key, "fake").unwrap();
+    let hop = JumpHopConfig {
+      alias: "bastion".to_string(),
+      host: "b.example.com".to_string(),
+      port: 22,
+      username: "u".to_string(),
+      key_path: existing_key.clone(),
+    };
+    let ch = make_channel("c", vec![hop]);
+
+    let kh_path = std::env::temp_dir().join(format!(
+      "ssh-channels-hub-test-kh-empty-{}",
+      std::process::id()
+    ));
+    // Empty but existing known_hosts — file present, host absent.
+    std::fs::write(&kh_path, "").unwrap();
+
+    let report = check_jump_preflight(&[ch], Some(&kh_path));
+    assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
+    assert!(
+      report
+        .warnings
+        .iter()
+        .any(|w| w.contains("no entry for b.example.com:22")),
+      "warnings: {:?}",
+      report.warnings
+    );
+
+    let _ = std::fs::remove_file(&existing_key);
+    let _ = std::fs::remove_file(&kh_path);
+  }
+
+  #[test]
+  fn preflight_dedupes_shared_bastion_across_channels() {
+    let missing = std::env::temp_dir().join(format!(
+      "ssh-channels-hub-test-shared-{}",
+      std::process::id()
+    ));
+    let _ = std::fs::remove_file(&missing);
+    let hop = JumpHopConfig {
+      alias: "bastion".to_string(),
+      host: "b.example.com".to_string(),
+      port: 22,
+      username: "u".to_string(),
+      key_path: missing.clone(),
+    };
+    let a = make_channel("a", vec![hop.clone()]);
+    let b = make_channel("b", vec![hop.clone()]);
+    let c = make_channel("c", vec![hop]);
+
+    let kh = std::env::temp_dir().join(format!(
+      "ssh-channels-hub-test-dedupe-kh-{}",
+      std::process::id()
+    ));
+    std::fs::write(&kh, "").unwrap();
+
+    let report = check_jump_preflight(&[a, b, c], Some(&kh));
+    // Shared key path → one error, not three.
+    assert_eq!(
+      report.errors.len(),
+      1,
+      "expected single dedup'd error, got: {:?}",
+      report.errors
+    );
+    // Shared (host, port) → one known_hosts warning, not three.
+    let kh_warnings: Vec<_> = report
+      .warnings
+      .iter()
+      .filter(|w| w.contains("no entry for"))
+      .collect();
+    assert_eq!(
+      kh_warnings.len(),
+      1,
+      "expected single dedup'd kh warning, got: {:?}",
+      kh_warnings
+    );
+
+    let _ = std::fs::remove_file(&kh);
   }
 
   #[test]
