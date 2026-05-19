@@ -169,6 +169,23 @@ pub struct ChannelConfig {
   pub username: String,
   pub auth: AuthConfig,
   pub params: ChannelTypeParams,
+  /// Ordered ProxyJump chain. Empty when the target is dialed directly.
+  /// Each hop is reached by opening a `direct-tcpip` channel on the previous
+  /// hop's SSH session (first hop is dialed via plain TCP).
+  pub proxy_jumps: Vec<JumpHopConfig>,
+}
+
+/// One hop in a ProxyJump chain. Built only from data the tool can read
+/// non-interactively: a `Host <alias>` block in `~/.ssh/config` providing
+/// HostName/User/Port and an unencrypted IdentityFile for publickey auth.
+#[derive(Debug, Clone)]
+pub struct JumpHopConfig {
+  /// SSH config alias the hop was resolved from (for error messages).
+  pub alias: String,
+  pub host: String,
+  pub port: u16,
+  pub username: String,
+  pub key_path: PathBuf,
 }
 
 /// Parameters for each underlying SSH channel type. Names mirror RFC 4254.
@@ -362,6 +379,8 @@ impl AppConfig {
     let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
       entries.iter().map(|e| (e.host.as_str(), e)).collect();
 
+    let default_keys = ssh_config::default_identity_file_candidates();
+
     let mut channels = Vec::new();
     for conn in &self.channels {
       let entry = by_alias
@@ -396,6 +415,8 @@ impl AppConfig {
       let override_ = self.auth.get(&conn.hostname);
       let auth = resolve_auth(&conn.hostname, entry, override_)?;
 
+      let proxy_jumps = resolve_jump_chain(&conn.hostname, entry, &by_alias, &default_keys)?;
+
       let params = match conn.direction {
         Direction::LocalToRemote => ChannelTypeParams::DirectTcpIp {
           listen_host: conn.local.host.clone(),
@@ -418,6 +439,7 @@ impl AppConfig {
         username,
         auth,
         params,
+        proxy_jumps,
       });
     }
 
@@ -483,6 +505,85 @@ impl AppConfig {
 
     out
   }
+}
+
+/// Resolve the ordered ProxyJump chain for a channel.
+///
+/// Scope: each token in the entry's `ProxyJump` directive must be a Host alias
+/// that has its own `Host <alias>` block in `~/.ssh/config`. Raw `user@host:port`
+/// forms are rejected with a clear message asking the user to define an alias.
+/// Each hop must have HostName, User, and an IdentityFile (explicit on the
+/// alias, inherited from `Host *`, or one of the default `~/.ssh/id_*` files).
+/// Passphrase-protected keys and password auth are not supported on jumps —
+/// the encryption check happens at connect time when the key is actually loaded.
+fn resolve_jump_chain(
+  channel_alias: &str,
+  entry: &ssh_config::SshConfigEntry,
+  by_alias: &HashMap<&str, &ssh_config::SshConfigEntry>,
+  default_keys: &[PathBuf],
+) -> Result<Vec<JumpHopConfig>> {
+  let mut chain = Vec::with_capacity(entry.proxy_jump.len());
+
+  for token in &entry.proxy_jump {
+    if token.contains('@') || token.contains(':') {
+      return Err(AppError::Config(format!(
+        "Channel host '{}' has ProxyJump '{}' written as a raw target. \
+         This tool only supports ProxyJump values that reference a `Host <alias>` \
+         block in {}. Define one for '{}' and replace the ProxyJump value with \
+         the alias.",
+        channel_alias,
+        token,
+        "~/.ssh/config",
+        token,
+      )));
+    }
+
+    let jump_entry = by_alias.get(token.as_str()).copied().ok_or_else(|| {
+      AppError::Config(format!(
+        "Channel host '{}' has ProxyJump '{}', but no `Host {}` block exists in \
+         ~/.ssh/config. Define it (HostName + User + IdentityFile) or remove \
+         the ProxyJump reference.",
+        channel_alias, token, token,
+      ))
+    })?;
+
+    let host = jump_entry.hostname.clone().ok_or_else(|| {
+      AppError::Config(format!(
+        "ProxyJump alias '{}' (used by channel host '{}') is missing `HostName`",
+        token, channel_alias
+      ))
+    })?;
+    let username = jump_entry.user.clone().ok_or_else(|| {
+      AppError::Config(format!(
+        "ProxyJump alias '{}' (used by channel host '{}') is missing `User`",
+        token, channel_alias
+      ))
+    })?;
+    let port = jump_entry.port.unwrap_or(22);
+
+    let key_path = jump_entry
+      .identity_file
+      .clone()
+      .or_else(|| default_keys.first().cloned())
+      .ok_or_else(|| {
+        AppError::Config(format!(
+          "ProxyJump alias '{}' (used by channel host '{}') has no `IdentityFile` \
+           and no default key (`~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, `id_dsa`) \
+           exists. This tool supports publickey-only auth on jump hosts.",
+          token, channel_alias
+        ))
+      })?;
+
+    chain.push(JumpHopConfig {
+      alias: token.clone(),
+      host,
+      port,
+      username,
+      key_path,
+    });
+  }
+
+  Ok(chain)
 }
 
 fn resolve_auth(
@@ -596,6 +697,226 @@ mod tests {
     assert!(
       msg.contains("local->remote") && msg.contains("remote->local"),
       "error should list valid options, got: {msg}"
+    );
+  }
+
+  // --- resolve_jump_chain ---
+
+  fn make_entry(
+    host: &str,
+    hostname: Option<&str>,
+    user: Option<&str>,
+    port: Option<u16>,
+    identity_file: Option<PathBuf>,
+    proxy_jump: Vec<String>,
+  ) -> ssh_config::SshConfigEntry {
+    ssh_config::SshConfigEntry {
+      host: host.to_string(),
+      hostname: hostname.map(String::from),
+      user: user.map(String::from),
+      port,
+      identity_file,
+      proxy_jump,
+    }
+  }
+
+  #[test]
+  fn jump_chain_empty_when_no_proxy_jump() {
+    let target = make_entry("t", Some("t.example.com"), Some("u"), None, None, vec![]);
+    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
+      std::iter::once(("t", &target)).collect();
+    let chain = resolve_jump_chain("t", &target, &by_alias, &[]).unwrap();
+    assert!(chain.is_empty());
+  }
+
+  #[test]
+  fn jump_chain_single_alias_uses_alias_identity_file() {
+    let bastion_key = PathBuf::from("/keys/bastion");
+    let bastion = make_entry(
+      "bastion",
+      Some("bastion.example.com"),
+      Some("bu"),
+      Some(2200),
+      Some(bastion_key.clone()),
+      vec![],
+    );
+    let target = make_entry(
+      "t",
+      Some("t.example.com"),
+      Some("u"),
+      None,
+      None,
+      vec!["bastion".to_string()],
+    );
+    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
+      [("t", &target), ("bastion", &bastion)].into_iter().collect();
+    let chain = resolve_jump_chain("t", &target, &by_alias, &[]).unwrap();
+    assert_eq!(chain.len(), 1);
+    assert_eq!(chain[0].alias, "bastion");
+    assert_eq!(chain[0].host, "bastion.example.com");
+    assert_eq!(chain[0].port, 2200);
+    assert_eq!(chain[0].username, "bu");
+    assert_eq!(chain[0].key_path, bastion_key);
+  }
+
+  #[test]
+  fn jump_chain_multi_hop_preserves_order() {
+    let k = PathBuf::from("/keys/k");
+    let alpha = make_entry(
+      "alpha",
+      Some("a.example.com"),
+      Some("ua"),
+      None,
+      Some(k.clone()),
+      vec![],
+    );
+    let beta = make_entry(
+      "beta",
+      Some("b.example.com"),
+      Some("ub"),
+      None,
+      Some(k.clone()),
+      vec![],
+    );
+    let target = make_entry(
+      "t",
+      Some("t.example.com"),
+      Some("u"),
+      None,
+      None,
+      vec!["alpha".to_string(), "beta".to_string()],
+    );
+    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> = [
+      ("t", &target),
+      ("alpha", &alpha),
+      ("beta", &beta),
+    ]
+    .into_iter()
+    .collect();
+    let chain = resolve_jump_chain("t", &target, &by_alias, &[]).unwrap();
+    let aliases: Vec<_> = chain.iter().map(|h| h.alias.as_str()).collect();
+    assert_eq!(aliases, vec!["alpha", "beta"]);
+  }
+
+  #[test]
+  fn jump_chain_rejects_raw_user_at_host_port_form() {
+    let target = make_entry(
+      "t",
+      Some("t.example.com"),
+      Some("u"),
+      None,
+      None,
+      vec!["admin@jump.example.com:2222".to_string()],
+    );
+    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
+      std::iter::once(("t", &target)).collect();
+    let err = resolve_jump_chain("t", &target, &by_alias, &[]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+      msg.contains("raw target") && msg.contains("Host <alias>"),
+      "expected raw-form rejection message, got: {msg}"
+    );
+  }
+
+  #[test]
+  fn jump_chain_rejects_unknown_alias() {
+    let target = make_entry(
+      "t",
+      Some("t.example.com"),
+      Some("u"),
+      None,
+      None,
+      vec!["missing".to_string()],
+    );
+    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
+      std::iter::once(("t", &target)).collect();
+    let err = resolve_jump_chain("t", &target, &by_alias, &[]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+      msg.contains("missing") && msg.contains("no `Host"),
+      "expected unknown-alias message, got: {msg}"
+    );
+  }
+
+  #[test]
+  fn jump_chain_falls_back_to_default_key_when_no_identity_file() {
+    let default = PathBuf::from("/home/u/.ssh/id_ed25519");
+    let bastion = make_entry(
+      "bastion",
+      Some("b.example.com"),
+      Some("u"),
+      None,
+      None, // no IdentityFile
+      vec![],
+    );
+    let target = make_entry(
+      "t",
+      Some("t.example.com"),
+      Some("u"),
+      None,
+      None,
+      vec!["bastion".to_string()],
+    );
+    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
+      [("t", &target), ("bastion", &bastion)].into_iter().collect();
+    let chain = resolve_jump_chain("t", &target, &by_alias, std::slice::from_ref(&default)).unwrap();
+    assert_eq!(chain.len(), 1);
+    assert_eq!(chain[0].key_path, default);
+  }
+
+  #[test]
+  fn jump_chain_errors_when_no_key_anywhere() {
+    let bastion = make_entry(
+      "bastion",
+      Some("b.example.com"),
+      Some("u"),
+      None,
+      None, // no IdentityFile
+      vec![],
+    );
+    let target = make_entry(
+      "t",
+      Some("t.example.com"),
+      Some("u"),
+      None,
+      None,
+      vec!["bastion".to_string()],
+    );
+    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
+      [("t", &target), ("bastion", &bastion)].into_iter().collect();
+    let err = resolve_jump_chain("t", &target, &by_alias, &[]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+      msg.contains("IdentityFile") && msg.contains("publickey-only"),
+      "expected missing-key message, got: {msg}"
+    );
+  }
+
+  #[test]
+  fn jump_chain_errors_when_alias_missing_user() {
+    let bastion = make_entry(
+      "bastion",
+      Some("b.example.com"),
+      None, // missing User
+      None,
+      Some(PathBuf::from("/k")),
+      vec![],
+    );
+    let target = make_entry(
+      "t",
+      Some("t.example.com"),
+      Some("u"),
+      None,
+      None,
+      vec!["bastion".to_string()],
+    );
+    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
+      [("t", &target), ("bastion", &bastion)].into_iter().collect();
+    let err = resolve_jump_chain("t", &target, &by_alias, &[]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+      msg.contains("missing `User`"),
+      "expected missing-user message, got: {msg}"
     );
   }
 

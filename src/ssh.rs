@@ -11,6 +11,67 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+/// SSH client handler for ProxyJump hops.
+///
+/// Differs from [`ClientHandler`] in `check_server_key`: jump hops are verified
+/// against `~/.ssh/known_hosts` strictly — an unknown host or a changed key
+/// causes the handshake to fail. There is no trust-on-first-use because this
+/// is a non-interactive daemon.
+#[derive(Clone)]
+struct JumpClientHandler {
+  alias: String,
+  host: String,
+  port: u16,
+}
+
+#[async_trait::async_trait]
+impl client::Handler for JumpClientHandler {
+  type Error = russh::Error;
+
+  async fn check_server_key(
+    &mut self,
+    server_public_key: &russh_keys::key::PublicKey,
+  ) -> std::result::Result<bool, Self::Error> {
+    match russh_keys::check_known_hosts(&self.host, self.port, server_public_key) {
+      Ok(true) => Ok(true),
+      Ok(false) => {
+        error!(
+          alias = %self.alias,
+          host = %self.host,
+          port = self.port,
+          "ProxyJump host not in known_hosts; refusing. Run \
+           `ssh-keyscan -p {} {} >> ~/.ssh/known_hosts` or `ssh {}` once \
+           to trust it.",
+          self.port, self.host, self.alias
+        );
+        Ok(false)
+      }
+      Err(russh_keys::Error::KeyChanged { line }) => {
+        error!(
+          alias = %self.alias,
+          host = %self.host,
+          port = self.port,
+          known_hosts_line = line,
+          "ProxyJump host key changed since last contact (possible MITM). \
+           Refusing. Verify out-of-band, then remove the stale line from \
+           ~/.ssh/known_hosts."
+        );
+        Ok(false)
+      }
+      Err(e) => {
+        error!(
+          alias = %self.alias,
+          host = %self.host,
+          port = self.port,
+          error = ?e,
+          "known_hosts check failed for ProxyJump"
+        );
+        Ok(false)
+      }
+    }
+  }
+}
+
 /// SSH client handler for direct-tcpip (local forwarding)
 #[derive(Clone)]
 struct ClientHandler;
@@ -186,17 +247,43 @@ impl SshManager {
 
   /// Establish SSH connection and open channel
   async fn establish_connection(config: &ChannelConfig, cancel: CancellationToken) -> Result<()> {
-    info!(
-        channel = %config.name,
-        host = %config.host,
-        port = config.port,
-        "Establishing SSH connection"
-    );
+    if config.proxy_jumps.is_empty() {
+      info!(
+          channel = %config.name,
+          host = %config.host,
+          port = config.port,
+          "Establishing SSH connection"
+      );
+    } else {
+      let chain: Vec<&str> = config.proxy_jumps.iter().map(|h| h.alias.as_str()).collect();
+      info!(
+          channel = %config.name,
+          host = %config.host,
+          port = config.port,
+          via = %chain.join(" -> "),
+          "Establishing SSH connection through ProxyJump chain"
+      );
+    }
 
     match &config.params {
-      ChannelTypeParams::ForwardedTcpIp { .. } => run_forwarded_tcpip(config, cancel).await,
+      ChannelTypeParams::ForwardedTcpIp {
+        local_connect_host,
+        local_connect_port,
+        ..
+      } => {
+        let handler = ReverseForwardHandler {
+          channel_name: config.name.clone(),
+          local_host: local_connect_host.clone(),
+          local_port: *local_connect_port,
+        };
+        // _jumps is held here for the lifetime of the connection — dropping any
+        // hop closes its `direct-tcpip` channel and cascades the failure to the
+        // terminal session, which the reconnect loop then retries.
+        let (_jumps, mut session) = connect_via_chain(config, handler).await?;
+        drive_forwarded_tcpip(&mut session, config, cancel).await
+      }
       ChannelTypeParams::DirectTcpIp { .. } => {
-        let mut session = connect_and_authenticate(config, ClientHandler).await?;
+        let (_jumps, mut session) = connect_via_chain(config, ClientHandler).await?;
         info!(channel = %config.name, "Opening channel");
         run_direct_tcpip_listener(&mut session, config, cancel).await
       }
@@ -204,8 +291,14 @@ impl SshManager {
   }
 }
 
-/// Run remote port forwarding (ssh -R style): ask server to bind a port, bridge incoming connections to local.
-async fn run_forwarded_tcpip(config: &ChannelConfig, cancel: CancellationToken) -> Result<()> {
+/// Drive remote port forwarding (ssh -R style) on an already-authenticated session:
+/// ask server to bind a port, then keep the session alive until cancellation or
+/// the session ends.
+async fn drive_forwarded_tcpip(
+  session: &mut client::Handle<ReverseForwardHandler>,
+  config: &ChannelConfig,
+  cancel: CancellationToken,
+) -> Result<()> {
   let ChannelTypeParams::ForwardedTcpIp {
     remote_bind_host,
     remote_bind_port,
@@ -214,17 +307,9 @@ async fn run_forwarded_tcpip(config: &ChannelConfig, cancel: CancellationToken) 
   } = &config.params
   else {
     return Err(AppError::SshChannel(
-      "run_forwarded_tcpip expects ForwardedTcpIp params".to_string(),
+      "drive_forwarded_tcpip expects ForwardedTcpIp params".to_string(),
     ));
   };
-
-  let handler = ReverseForwardHandler {
-    channel_name: config.name.clone(),
-    local_host: local_connect_host.clone(),
-    local_port: *local_connect_port,
-  };
-
-  let mut session = connect_and_authenticate(config, handler).await?;
 
   info!(
       channel = %config.name,
@@ -255,37 +340,183 @@ async fn run_forwarded_tcpip(config: &ChannelConfig, cancel: CancellationToken) 
           info!(channel = %config.name, "Forward cancelled");
           Ok(())
       }
-      result = &mut session => {
+      result = &mut *session => {
           result.map_err(|e| AppError::SshConnection(format!("Session ended: {}", e)))
       }
   }
 }
 
-/// Connect to the SSH server and authenticate. Returns an authenticated `client::Handle<H>`.
-async fn connect_and_authenticate<H>(
-  config: &ChannelConfig,
-  handler: H,
-) -> Result<client::Handle<H>>
-where
-  H: client::Handler + Send + 'static,
-{
-  let config_arc = Arc::new(russh::client::Config {
+/// Construct the shared russh client config (same keepalive policy for every hop).
+fn make_client_config() -> Arc<russh::client::Config> {
+  Arc::new(russh::client::Config {
     keepalive_interval: Some(Duration::from_secs(15)),
     keepalive_max: 3,
     ..Default::default()
-  });
+  })
+}
 
-  let mut session =
-    russh::client::connect(config_arc, (config.host.as_str(), config.port), handler)
+/// Establish the SSH session to the channel's target, optionally walking a
+/// ProxyJump chain on the way. Returns the chain of jump handles (which must
+/// be kept alive for the lifetime of the target session) plus the
+/// authenticated terminal session.
+///
+/// Topology: first hop is dialed via plain TCP; each subsequent hop and the
+/// terminal are reached by opening a `direct-tcpip` channel on the previous
+/// session and laying a new SSH handshake on top of it.
+async fn connect_via_chain<H>(
+  config: &ChannelConfig,
+  terminal_handler: H,
+) -> Result<(Vec<client::Handle<JumpClientHandler>>, client::Handle<H>)>
+where
+  H: client::Handler + Send + 'static,
+{
+  let russh_cfg = make_client_config();
+  let mut hops: Vec<client::Handle<JumpClientHandler>> =
+    Vec::with_capacity(config.proxy_jumps.len());
+
+  for (i, hop) in config.proxy_jumps.iter().enumerate() {
+    let handler = JumpClientHandler {
+      alias: hop.alias.clone(),
+      host: hop.host.clone(),
+      port: hop.port,
+    };
+
+    let mut session = if i == 0 {
+      info!(
+          channel = %config.name,
+          hop = %hop.alias,
+          host = %hop.host,
+          port = hop.port,
+          "Connecting to ProxyJump (first hop, TCP)"
+      );
+      russh::client::connect(russh_cfg.clone(), (hop.host.as_str(), hop.port), handler)
+        .await
+        .map_err(|e| {
+          AppError::SshConnection(format!(
+            "Failed to connect to ProxyJump '{}' ({}:{}): {:?}",
+            hop.alias, hop.host, hop.port, e
+          ))
+        })?
+    } else {
+      let prev_alias = config.proxy_jumps[i - 1].alias.clone();
+      info!(
+          channel = %config.name,
+          hop = %hop.alias,
+          via = %prev_alias,
+          "Tunneling to next ProxyJump"
+      );
+      let prev = hops.last().expect("hops non-empty after first iteration");
+      let channel = prev
+        .channel_open_direct_tcpip(hop.host.as_str(), hop.port as u32, "127.0.0.1", 0u32)
+        .await
+        .map_err(|e| {
+          AppError::SshConnection(format!(
+            "Failed to open jump channel through '{}' to '{}': {:?}",
+            prev_alias, hop.alias, e
+          ))
+        })?;
+      let stream = channel.into_stream();
+      russh::client::connect_stream(russh_cfg.clone(), stream, handler)
+        .await
+        .map_err(|e| {
+          AppError::SshConnection(format!(
+            "SSH handshake with ProxyJump '{}' (via '{}') failed: {:?}",
+            hop.alias, prev_alias, e
+          ))
+        })?
+    };
+
+    authenticate_jump_publickey(&mut session, &hop.alias, &hop.username, &hop.key_path).await?;
+    hops.push(session);
+  }
+
+  let mut terminal: client::Handle<H> = if hops.is_empty() {
+    russh::client::connect(
+      russh_cfg.clone(),
+      (config.host.as_str(), config.port),
+      terminal_handler,
+    )
+    .await
+    .map_err(|e| AppError::SshConnection(format!("Failed to connect: {:?}", e)))?
+  } else {
+    let prev_alias = config
+      .proxy_jumps
+      .last()
+      .expect("hops non-empty")
+      .alias
+      .clone();
+    info!(
+        channel = %config.name,
+        host = %config.host,
+        port = config.port,
+        via = %prev_alias,
+        "Tunneling to target via final ProxyJump"
+    );
+    let prev = hops.last().expect("hops non-empty");
+    let channel = prev
+      .channel_open_direct_tcpip(
+        config.host.as_str(),
+        config.port as u32,
+        "127.0.0.1",
+        0u32,
+      )
       .await
-      .map_err(|e| AppError::SshConnection(format!("Failed to connect: {:?}", e)))?;
+      .map_err(|e| {
+        AppError::SshConnection(format!(
+          "Failed to open target channel through ProxyJump '{}': {:?}",
+          prev_alias, e
+        ))
+      })?;
+    let stream = channel.into_stream();
+    russh::client::connect_stream(russh_cfg, stream, terminal_handler)
+      .await
+      .map_err(|e| {
+        AppError::SshConnection(format!("SSH handshake with target failed: {:?}", e))
+      })?
+  };
 
   info!(channel = %config.name, "SSH connection established, authenticating");
+  authenticate_terminal(&mut terminal, &config.username, &config.auth).await?;
+  info!(channel = %config.name, "Authentication successful");
 
-  match &config.auth {
+  Ok((hops, terminal))
+}
+
+/// Authenticate a jump hop using publickey only. The key must be unencrypted —
+/// daemons can't prompt for a passphrase.
+async fn authenticate_jump_publickey(
+  session: &mut client::Handle<JumpClientHandler>,
+  alias: &str,
+  username: &str,
+  key_path: &Path,
+) -> Result<()> {
+  let key = load_jump_key(key_path, alias).await?;
+  session
+    .authenticate_publickey(username, Arc::new(key))
+    .await
+    .map_err(|e| {
+      AppError::SshAuthentication(format!(
+        "Public-key auth failed at ProxyJump '{}': {}",
+        alias, e
+      ))
+    })?;
+  Ok(())
+}
+
+/// Authenticate the terminal session using whichever AuthConfig the channel was
+/// resolved with. Mirrors the original direct-connect path's auth logic.
+async fn authenticate_terminal<H>(
+  session: &mut client::Handle<H>,
+  username: &str,
+  auth: &AuthConfig,
+) -> Result<()>
+where
+  H: client::Handler + Send,
+{
+  match auth {
     AuthConfig::Password { password } => {
       session
-        .authenticate_password(&config.username, password)
+        .authenticate_password(username, password)
         .await
         .map_err(|e| {
           AppError::SshAuthentication(format!("Password authentication failed: {}", e))
@@ -297,14 +528,43 @@ where
     } => {
       let key = load_secret_key(key_path, passphrase.as_deref()).await?;
       session
-        .authenticate_publickey(&config.username, Arc::new(key))
+        .authenticate_publickey(username, Arc::new(key))
         .await
-        .map_err(|e| AppError::SshAuthentication(format!("Key authentication failed: {}", e)))?;
+        .map_err(|e| {
+          AppError::SshAuthentication(format!("Key authentication failed: {}", e))
+        })?;
     }
   }
+  Ok(())
+}
 
-  info!(channel = %config.name, "Authentication successful");
-  Ok(session)
+/// Load an unencrypted private key for a jump hop. Surfaces a tailored error
+/// when the key is passphrase-protected so the user knows daemon-mode can't
+/// prompt and points them at the fix.
+async fn load_jump_key(key_path: &Path, alias: &str) -> Result<KeyPair> {
+  let key_path = key_path.to_path_buf();
+  let alias = alias.to_string();
+  tokio::task::spawn_blocking(move || {
+    let data = std::fs::read_to_string(&key_path).map_err(AppError::Io)?;
+    match russh_keys::decode_secret_key(&data, None) {
+      Ok(k) => Ok(k),
+      Err(russh_keys::Error::KeyIsEncrypted) => Err(AppError::SshAuthentication(format!(
+        "ProxyJump alias '{}' uses encrypted IdentityFile '{}'. This tool does \
+         not prompt for passphrases on jump hosts — decrypt the key or point \
+         IdentityFile at an unencrypted one.",
+        alias,
+        key_path.display()
+      ))),
+      Err(e) => Err(AppError::SshAuthentication(format!(
+        "Failed to decode ProxyJump key for '{}' ({}): {}",
+        alias,
+        key_path.display(),
+        e
+      ))),
+    }
+  })
+  .await
+  .map_err(|e| AppError::SshAuthentication(format!("Task join error: {}", e)))?
 }
 
 /// Load SSH private key
