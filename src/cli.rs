@@ -61,11 +61,22 @@ IPC socket recorded next to config.toml.")]
 
   /// Show whether the service is running, plus configured channels.
   #[command(long_about = "\
-Connects to the running daemon over IPC to report live state.
+Connects to the running daemon over IPC to report live state, with
+per-channel health (Connected / Reconnecting / Failed / Stopped).
 
 When no daemon is running, falls back to printing the channels
-declared in config.toml so you can still see the intended setup.")]
-  Status,
+declared in config.toml so you can still see the intended setup.
+
+With --watch, re-renders periodically until interrupted (Ctrl+C);
+useful for monitoring a fragile link.")]
+  Status {
+    /// Re-render every <interval> seconds until Ctrl+C.
+    #[arg(short = 'w', long)]
+    watch: bool,
+    /// Watch refresh interval in seconds (minimum 1, only used with --watch).
+    #[arg(short = 'n', long, default_value_t = 2, value_name = "SECONDS")]
+    interval: u64,
+  },
 
   /// Validate config.toml — resolves each channel against ~/.ssh/config.
   #[command(long_about = "\

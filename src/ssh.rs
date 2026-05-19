@@ -1,10 +1,11 @@
-use crate::config::{AuthConfig, ChannelConfig, ChannelTypeParams, ReconnectionConfig};
+use crate::config::{AuthConfig, ChannelConfig, ChannelTypeParams, Direction, ReconnectionConfig};
 use crate::error::{AppError, Result};
+use crate::service::{ChannelHealth, ChannelStatus};
 use backon::{ExponentialBuilder, Retryable};
 use russh::*;
 use russh_keys::key::KeyPair;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -148,6 +149,11 @@ pub struct SshManager {
   reconnection_config: ReconnectionConfig,
   shutdown_tx: Option<mpsc::Sender<()>>,
   cancellation_token: Option<CancellationToken>,
+  /// Live channel health, shared with the spawned connect loop. Uses
+  /// `std::sync::Mutex` because we only hold the lock for state writes
+  /// (never across `.await`), and `backon::Retry::notify` takes a sync
+  /// closure that needs to do the same.
+  health: Arc<StdMutex<ChannelHealth>>,
 }
 
 impl SshManager {
@@ -158,6 +164,45 @@ impl SshManager {
       reconnection_config,
       shutdown_tx: None,
       cancellation_token: None,
+      health: Arc::new(StdMutex::new(ChannelHealth::Stopped)),
+    }
+  }
+
+  /// Snapshot for the `status` command: channel topology plus current health.
+  pub fn snapshot(&self) -> ChannelStatus {
+    let (direction, local, remote) = match &self.config.params {
+      ChannelTypeParams::DirectTcpIp {
+        listen_host,
+        local_port,
+        dest_host,
+        dest_port,
+      } => (
+        Direction::LocalToRemote,
+        format!("{}:{}", listen_host, local_port),
+        format!("{}:{}", dest_host, dest_port),
+      ),
+      ChannelTypeParams::ForwardedTcpIp {
+        remote_bind_host,
+        remote_bind_port,
+        local_connect_host,
+        local_connect_port,
+      } => (
+        Direction::RemoteToLocal,
+        format!("{}:{}", local_connect_host, local_connect_port),
+        format!("{}:{}", remote_bind_host, remote_bind_port),
+      ),
+    };
+    let health = self
+      .health
+      .lock()
+      .map(|h| h.clone())
+      .unwrap_or(ChannelHealth::Stopped);
+    ChannelStatus {
+      name: self.config.name.clone(),
+      direction,
+      local,
+      remote,
+      health,
     }
   }
 
@@ -170,6 +215,9 @@ impl SshManager {
 
     let config = self.config.clone();
     let reconnection_config = self.reconnection_config.clone();
+    let health = self.health.clone();
+
+    set_health(&health, ChannelHealth::Connecting { attempt: 1 });
 
     tokio::spawn(async move {
       loop {
@@ -179,19 +227,25 @@ impl SshManager {
                 break;
             }
             _ = cancel.cancelled() => break,
-            result = Self::connect_and_manage_channel(&config, &reconnection_config, cancel.clone()) => {
+            result = Self::connect_and_manage_channel(&config, &reconnection_config, cancel.clone(), health.clone()) => {
                 match result {
                     Ok(_) => {
                         warn!(channel = %config.name, "Connection closed unexpectedly");
                     }
                     Err(e) => {
                         error!(channel = %config.name, error = ?e, "Connection error");
+                        set_health(&health, ChannelHealth::Failed { error: e.to_string() });
                     }
                 }
             }
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
+        // Outer loop restarts the connect cycle even after `max_retries` is
+        // exhausted (project design — see top-level comment on ChannelHealth).
+        // Reset the badge so the user sees a fresh attempt counter.
+        set_health(&health, ChannelHealth::Connecting { attempt: 1 });
       }
+      set_health(&health, ChannelHealth::Stopped);
     });
 
     Ok(())
@@ -205,6 +259,7 @@ impl SshManager {
     if let Some(token) = self.cancellation_token.take() {
       token.cancel();
     }
+    set_health(&self.health, ChannelHealth::Stopped);
     Ok(())
   }
 
@@ -213,6 +268,7 @@ impl SshManager {
     config: &ChannelConfig,
     reconnection_config: &ReconnectionConfig,
     cancel: CancellationToken,
+    health: Arc<StdMutex<ChannelHealth>>,
   ) -> Result<()> {
     // Build retry policy
     let builder = if reconnection_config.use_exponential_backoff {
@@ -238,15 +294,50 @@ impl SshManager {
       builder
     };
 
-    // Retry connection with backoff
-    (|| async { Self::establish_connection(config, cancel.clone()).await })
-      .retry(&builder)
-      .await
-      .map_err(|e| AppError::SshConnection(format!("Failed to establish connection: {}", e)))
+    // Retry connection with backoff. Each attempt increments `attempt_counter`;
+    // backon's `notify` fires between attempts so we can flip to Reconnecting
+    // with the failure cause. The success path flips to Connected from inside
+    // the run_* helpers, before they block on the session.
+    let attempt_counter = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let health_for_attempt = health.clone();
+    let health_for_notify = health.clone();
+    let attempt_for_notify = attempt_counter.clone();
+
+    (|| {
+      let n = attempt_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+      set_health(&health_for_attempt, ChannelHealth::Connecting { attempt: n });
+      let health = health.clone();
+      let cancel = cancel.clone();
+      async move { Self::establish_connection(config, cancel, health).await }
+    })
+    .retry(&builder)
+    .notify(move |err, dur| {
+      let attempt = attempt_for_notify.load(std::sync::atomic::Ordering::Relaxed);
+      warn!(
+          channel = %config.name,
+          attempt,
+          backoff_ms = dur.as_millis() as u64,
+          error = %err,
+          "Connect attempt failed, will retry"
+      );
+      set_health(
+        &health_for_notify,
+        ChannelHealth::Reconnecting {
+          attempt,
+          last_error: err.to_string(),
+        },
+      );
+    })
+    .await
+    .map_err(|e| AppError::SshConnection(format!("Failed to establish connection: {}", e)))
   }
 
   /// Establish SSH connection and open channel
-  async fn establish_connection(config: &ChannelConfig, cancel: CancellationToken) -> Result<()> {
+  async fn establish_connection(
+    config: &ChannelConfig,
+    cancel: CancellationToken,
+    health: Arc<StdMutex<ChannelHealth>>,
+  ) -> Result<()> {
     if config.proxy_jumps.is_empty() {
       info!(
           channel = %config.name,
@@ -280,14 +371,25 @@ impl SshManager {
         // hop closes its `direct-tcpip` channel and cascades the failure to the
         // terminal session, which the reconnect loop then retries.
         let (_jumps, mut session) = connect_via_chain(config, handler).await?;
-        drive_forwarded_tcpip(&mut session, config, cancel).await
+        drive_forwarded_tcpip(&mut session, config, cancel, health).await
       }
       ChannelTypeParams::DirectTcpIp { .. } => {
         let (_jumps, mut session) = connect_via_chain(config, ClientHandler).await?;
         info!(channel = %config.name, "Opening channel");
-        run_direct_tcpip_listener(&mut session, config, cancel).await
+        run_direct_tcpip_listener(&mut session, config, cancel, health).await
       }
     }
+  }
+}
+
+/// Briefly lock and overwrite the health cell. Logs and swallows poison: the
+/// reconnect loop should never abort just because a previous panic poisoned
+/// the mutex — losing one badge update is preferable to taking the whole
+/// channel down.
+fn set_health(cell: &Arc<StdMutex<ChannelHealth>>, next: ChannelHealth) {
+  match cell.lock() {
+    Ok(mut g) => *g = next,
+    Err(poisoned) => *poisoned.into_inner() = next,
   }
 }
 
@@ -298,6 +400,7 @@ async fn drive_forwarded_tcpip(
   session: &mut client::Handle<ReverseForwardHandler>,
   config: &ChannelConfig,
   cancel: CancellationToken,
+  health: Arc<StdMutex<ChannelHealth>>,
 ) -> Result<()> {
   let ChannelTypeParams::ForwardedTcpIp {
     remote_bind_host,
@@ -334,6 +437,10 @@ async fn drive_forwarded_tcpip(
       local = %format!("{}:{}", local_connect_host, local_connect_port),
       "Remote forward active (incoming connections will be bridged to local)"
   );
+  // tcpip-forward registered → the channel is serving. Flip the badge here,
+  // before we block on the session future, so `status` sees Connected even
+  // when traffic is idle.
+  set_health(&health, ChannelHealth::Connected);
 
   tokio::select! {
       _ = cancel.cancelled() => {
@@ -592,6 +699,7 @@ async fn run_direct_tcpip_listener(
   session: &mut client::Handle<ClientHandler>,
   config: &ChannelConfig,
   cancel: CancellationToken,
+  health: Arc<StdMutex<ChannelHealth>>,
 ) -> Result<()> {
   let ChannelTypeParams::DirectTcpIp {
     listen_host,
@@ -618,6 +726,9 @@ async fn run_direct_tcpip_listener(
       listen = %listen_addr,
       "Local listener started, accepting connections"
   );
+  // Listener bound → ready to relay. Flip before the accept loop so `status`
+  // sees Connected immediately, not only after the first client connects.
+  set_health(&health, ChannelHealth::Connected);
 
   loop {
     tokio::select! {

@@ -3,8 +3,8 @@
 //! Colors auto-disable when stdout is not a TTY or `NO_COLOR` is set
 //! (via `owo_colors::Stream::Stdout`).
 
-use crate::config::{ChannelTypeParams, ConnectionConfig, Direction};
-use crate::service::{ServiceState, ServiceStatus};
+use crate::config::{ChannelTypeParams, Direction};
+use crate::service::{ChannelHealth, ChannelStatus, ServiceState, ServiceStatus};
 use owo_colors::{OwoColorize, Stream::Stdout, Style};
 use std::path::Path;
 
@@ -201,42 +201,6 @@ pub fn direction_short(direction: Direction) -> String {
 
 // ---------- Channel tables ----------
 
-/// One-line channel summary used in lists.
-pub fn channel_line(c: &ConnectionConfig) {
-  let local = format!("{}:{}", c.local.host, c.local.port);
-  let remote = format!("{}:{}", c.remote.host, c.remote.port);
-  let arrow = direction_arrow(c.direction);
-  let host_tag = format!("@{}", c.hostname);
-
-  println!(
-    "  {} {} {} {} {} {}",
-    "•".if_supports_color(Stdout, |t| t.style(blue_bold())),
-    c.name.if_supports_color(Stdout, |t| t.style(cyan_bold())),
-    host_tag.if_supports_color(Stdout, |t| t.style(dim())),
-    local.if_supports_color(Stdout, |t| t.style(bold())),
-    arrow,
-    remote.if_supports_color(Stdout, |t| t.style(bold())),
-  );
-}
-
-/// Channel list (from config.toml) with header. No-op if empty.
-pub fn channel_list(channels: &[ConnectionConfig]) {
-  if channels.is_empty() {
-    return;
-  }
-  let count = format!("{}", channels.len());
-  println!(
-    "  {} {}{}{}",
-    "Channels".if_supports_color(Stdout, |t| t.style(bold())),
-    "(".if_supports_color(Stdout, |t| t.style(dim())),
-    count.if_supports_color(Stdout, |t| t.style(cyan_bold())),
-    "):".if_supports_color(Stdout, |t| t.style(dim())),
-  );
-  for c in channels {
-    channel_line(c);
-  }
-}
-
 /// One row in the "Hosts found in SSH config" list rendered by `generate`.
 pub fn host_entry_line(alias: &str, target: &str, key_info: &str, has_key: bool) {
   let alias_styled = alias.if_supports_color(Stdout, |t| t.style(cyan_bold()));
@@ -303,7 +267,103 @@ pub fn resolved_channel_line(
 
 // ---------- High-level blocks ----------
 
-/// Print the full Service Status block.
+/// Colored badge for a `ChannelHealth`. Compact form for inline rendering;
+/// the caller is responsible for any extra context (e.g. last_error tail).
+pub fn health_badge(health: &ChannelHealth) -> String {
+  let (icon, label, style) = match health {
+    ChannelHealth::Stopped => ("●", "Stopped".to_string(), dim()),
+    ChannelHealth::Connecting { attempt } => (
+      "●",
+      if *attempt > 1 {
+        format!("Connecting #{}", attempt)
+      } else {
+        "Connecting".to_string()
+      },
+      yellow_bold(),
+    ),
+    ChannelHealth::Connected => ("●", "Connected".to_string(), green_bold()),
+    ChannelHealth::Reconnecting { attempt, .. } => (
+      "●",
+      format!("Reconnecting #{}", attempt),
+      yellow_bold(),
+    ),
+    ChannelHealth::Failed { .. } => ("✗", "Failed".to_string(), red_bold()),
+  };
+  format!(
+    "{} {}",
+    icon.if_supports_color(Stdout, |t| t.style(style)),
+    label.if_supports_color(Stdout, |t| t.style(style))
+  )
+}
+
+/// Render the per-channel health table inside Service Status. Each row shows
+/// name, direction-tagged endpoints, and a colored health badge; rows in
+/// Reconnecting/Failed get a second dimmed line with the last error.
+pub fn print_channel_health_list(channels: &[ChannelStatus]) {
+  if channels.is_empty() {
+    return;
+  }
+  let count = format!("{}", channels.len());
+  println!(
+    "  {} {}{}{}",
+    "Channels".if_supports_color(Stdout, |t| t.style(bold())),
+    "(".if_supports_color(Stdout, |t| t.style(dim())),
+    count.if_supports_color(Stdout, |t| t.style(cyan_bold())),
+    "):".if_supports_color(Stdout, |t| t.style(dim())),
+  );
+
+  // Pad the channel name column so badges line up.
+  let name_width = channels.iter().map(|c| c.name.len()).max().unwrap_or(0);
+
+  for ch in channels {
+    let badge = health_badge(&ch.health);
+    let arrow = direction_arrow(ch.direction);
+    // For local->remote: local listens, remote is dialed; for remote->local
+    // the snapshot already swapped local/remote so this rendering is uniform.
+    let endpoints = format!(
+      "{} {} {} {}",
+      direction_short(ch.direction),
+      ch.local.if_supports_color(Stdout, |t| t.style(bold())),
+      arrow,
+      ch.remote.if_supports_color(Stdout, |t| t.style(bold())),
+    );
+    let name_padded = format!("{:width$}", ch.name, width = name_width);
+    println!(
+      "  {} {}  {}  {}",
+      "•".if_supports_color(Stdout, |t| t.style(blue_bold())),
+      name_padded.if_supports_color(Stdout, |t| t.style(cyan_bold())),
+      endpoints,
+      badge,
+    );
+    // Surface the failure cause on a second dim line — searching scrollback
+    // for the matching `error` log lines is friction users shouldn't pay.
+    let detail = match &ch.health {
+      ChannelHealth::Reconnecting { last_error, .. } if !last_error.is_empty() => {
+        Some(last_error.as_str())
+      }
+      ChannelHealth::Failed { error } if !error.is_empty() => Some(error.as_str()),
+      _ => None,
+    };
+    if let Some(msg) = detail {
+      // Two-space indent under the bullet; truncate so very long error
+      // messages don't blow out the terminal.
+      let trimmed: String = msg.chars().take(160).collect();
+      let display = if msg.len() > 160 {
+        format!("{}…", trimmed)
+      } else {
+        trimmed
+      };
+      println!(
+        "      ↳ {}",
+        display.if_supports_color(Stdout, |t| t.style(dim()))
+      );
+    }
+  }
+}
+
+/// Print the full Service Status block (header + state line + per-channel
+/// health table). Note rendering trails the table so it's the last thing
+/// the user sees in watch mode.
 pub fn print_service_status(
   status: &ServiceStatus,
   config_path: &Path,
@@ -315,13 +375,17 @@ pub fn print_service_status(
   kv(
     "Channels",
     format!(
-      "{} active",
-      channels_ratio(status.active_channels, status.total_channels)
+      "{} connected",
+      channels_ratio(status.connected_count(), status.total_count())
     ),
   );
   kv_dim("Config", config_path.display());
   if let Some(pid) = pid {
     kv_dim("PID", pid);
+  }
+  if !status.channels.is_empty() {
+    println!();
+    print_channel_health_list(&status.channels);
   }
   if let Some(note) = note {
     println!();
