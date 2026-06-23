@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod host_check;
 pub mod port_check;
 pub mod service;
 pub mod ssh;

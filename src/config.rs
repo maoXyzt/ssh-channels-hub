@@ -539,7 +539,7 @@ impl AppConfig {
 /// whitespace-separated; no extra flags). Returns `Some(alias)` on match,
 /// `None` for any other shape. Deliberately narrow — the caller turns `None`
 /// into a clear, actionable error.
-fn parse_proxy_command_to_alias(cmd: &str) -> Option<String> {
+pub(crate) fn parse_proxy_command_to_alias(cmd: &str) -> Option<String> {
   let tokens: Vec<&str> = cmd.split_whitespace().collect();
   if tokens.len() != 4 || tokens[0] != "ssh" {
     return None;
@@ -584,10 +584,7 @@ fn resolve_jump_chain(
          This tool only supports ProxyJump values that reference a `Host <alias>` \
          block in {}. Define one for '{}' and replace the ProxyJump value with \
          the alias.",
-        channel_alias,
-        token,
-        "~/.ssh/config",
-        token,
+        channel_alias, token, "~/.ssh/config", token,
       )));
     }
 
@@ -921,7 +918,9 @@ mod tests {
       vec!["bastion".to_string()],
     );
     let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
-      [("t", &target), ("bastion", &bastion)].into_iter().collect();
+      [("t", &target), ("bastion", &bastion)]
+        .into_iter()
+        .collect();
     let chain = resolve_jump_chain("t", &target, &by_alias, &[]).unwrap();
     assert_eq!(chain.len(), 1);
     assert_eq!(chain[0].alias, "bastion");
@@ -958,13 +957,10 @@ mod tests {
       None,
       vec!["alpha".to_string(), "beta".to_string()],
     );
-    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> = [
-      ("t", &target),
-      ("alpha", &alpha),
-      ("beta", &beta),
-    ]
-    .into_iter()
-    .collect();
+    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
+      [("t", &target), ("alpha", &alpha), ("beta", &beta)]
+        .into_iter()
+        .collect();
     let chain = resolve_jump_chain("t", &target, &by_alias, &[]).unwrap();
     let aliases: Vec<_> = chain.iter().map(|h| h.alias.as_str()).collect();
     assert_eq!(aliases, vec!["alpha", "beta"]);
@@ -1030,8 +1026,11 @@ mod tests {
       vec!["bastion".to_string()],
     );
     let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
-      [("t", &target), ("bastion", &bastion)].into_iter().collect();
-    let chain = resolve_jump_chain("t", &target, &by_alias, std::slice::from_ref(&default)).unwrap();
+      [("t", &target), ("bastion", &bastion)]
+        .into_iter()
+        .collect();
+    let chain =
+      resolve_jump_chain("t", &target, &by_alias, std::slice::from_ref(&default)).unwrap();
     assert_eq!(chain.len(), 1);
     assert_eq!(chain[0].key_path, default);
   }
@@ -1055,7 +1054,9 @@ mod tests {
       vec!["bastion".to_string()],
     );
     let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
-      [("t", &target), ("bastion", &bastion)].into_iter().collect();
+      [("t", &target), ("bastion", &bastion)]
+        .into_iter()
+        .collect();
     let err = resolve_jump_chain("t", &target, &by_alias, &[]).unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -1083,7 +1084,9 @@ mod tests {
       vec!["bastion".to_string()],
     );
     let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
-      [("t", &target), ("bastion", &bastion)].into_iter().collect();
+      [("t", &target), ("bastion", &bastion)]
+        .into_iter()
+        .collect();
     let err = resolve_jump_chain("t", &target, &by_alias, &[]).unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -1171,7 +1174,9 @@ mod tests {
       Some("ssh bastion -W %h:%p"),
     );
     let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
-      [("t", &target), ("bastion", &bastion)].into_iter().collect();
+      [("t", &target), ("bastion", &bastion)]
+        .into_iter()
+        .collect();
 
     // Simulate the build_channels rewrite: turn proxy_command into proxy_jump
     // and feed the clone to resolve_jump_chain.
@@ -1188,10 +1193,7 @@ mod tests {
 
   // --- check_jump_preflight ---
 
-  fn make_channel(
-    name: &str,
-    proxy_jumps: Vec<JumpHopConfig>,
-  ) -> ChannelConfig {
+  fn make_channel(name: &str, proxy_jumps: Vec<JumpHopConfig>) -> ChannelConfig {
     ChannelConfig {
       name: name.to_string(),
       host: "target.example.com".to_string(),
@@ -1236,10 +1238,7 @@ mod tests {
     let ch = make_channel("c", vec![hop]);
 
     // Use a fake known_hosts that exists to isolate the IdentityFile path.
-    let dir = std::env::temp_dir().join(format!(
-      "ssh-channels-hub-test-kh-{}",
-      std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("ssh-channels-hub-test-kh-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let kh = dir.join("known_hosts");
     std::fs::write(&kh, "").unwrap();
@@ -1260,10 +1259,8 @@ mod tests {
   fn preflight_warns_when_known_hosts_missing_overall() {
     // Even existing IdentityFile — if known_hosts itself doesn't exist, we
     // emit one top-level warning instead of N per-host ones.
-    let existing_key = std::env::temp_dir().join(format!(
-      "ssh-channels-hub-test-key-{}",
-      std::process::id()
-    ));
+    let existing_key =
+      std::env::temp_dir().join(format!("ssh-channels-hub-test-key-{}", std::process::id()));
     std::fs::write(&existing_key, "fake").unwrap();
     let hop = JumpHopConfig {
       alias: "bastion".to_string(),
@@ -1274,15 +1271,19 @@ mod tests {
     };
     let ch = make_channel("c", vec![hop]);
 
-    let nonexistent_kh =
-      std::env::temp_dir().join(format!("ssh-channels-hub-test-kh-nope-{}", std::process::id()));
+    let nonexistent_kh = std::env::temp_dir().join(format!(
+      "ssh-channels-hub-test-kh-nope-{}",
+      std::process::id()
+    ));
     let _ = std::fs::remove_file(&nonexistent_kh);
 
     let report = check_jump_preflight(&[ch], Some(&nonexistent_kh));
     assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
     assert!(
-      report.warnings.iter().any(|w| w.contains("does not exist")
-        && w.contains("strict known_hosts")),
+      report
+        .warnings
+        .iter()
+        .any(|w| w.contains("does not exist") && w.contains("strict known_hosts")),
       "warnings: {:?}",
       report.warnings
     );
@@ -1292,10 +1293,8 @@ mod tests {
 
   #[test]
   fn preflight_warns_when_jump_host_missing_from_known_hosts() {
-    let existing_key = std::env::temp_dir().join(format!(
-      "ssh-channels-hub-test-key2-{}",
-      std::process::id()
-    ));
+    let existing_key =
+      std::env::temp_dir().join(format!("ssh-channels-hub-test-key2-{}", std::process::id()));
     std::fs::write(&existing_key, "fake").unwrap();
     let hop = JumpHopConfig {
       alias: "bastion".to_string(),

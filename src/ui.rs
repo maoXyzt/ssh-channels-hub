@@ -282,11 +282,9 @@ pub fn health_badge(health: &ChannelHealth) -> String {
       yellow_bold(),
     ),
     ChannelHealth::Connected => ("●", "Connected".to_string(), green_bold()),
-    ChannelHealth::Reconnecting { attempt, .. } => (
-      "●",
-      format!("Reconnecting #{}", attempt),
-      yellow_bold(),
-    ),
+    ChannelHealth::Reconnecting { attempt, .. } => {
+      ("●", format!("Reconnecting #{}", attempt), yellow_bold())
+    }
     ChannelHealth::Failed { .. } => ("✗", "Failed".to_string(), red_bold()),
   };
   format!(

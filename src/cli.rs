@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 /// SSH Channels Hub — manage SSH port-forwarding tunnels with auto-reconnect.
@@ -104,6 +104,22 @@ blocks for hosts that have no IdentityFile.")]
     output: Option<PathBuf>,
   },
 
+  /// List SSH config Host aliases and whether this tool can use them.
+  #[command(long_about = "\
+Scans SSH config and reports each `Host <alias>` block as supported or
+unsupported for ssh-channels-hub. Use this before writing channels to find
+missing HostName/User fields, unsupported ProxyJump forms, and hosts that
+will need a password in config.toml.")]
+  Hosts {
+    /// SSH config to read (default: ~/.ssh/config).
+    #[arg(short, long, value_name = "FILE")]
+    ssh_config: Option<PathBuf>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = HostOutputFormat::Table)]
+    format: HostOutputFormat,
+  },
+
   /// Probe each local→remote channel by connecting to its local port.
   #[command(long_about = "\
 For every `local->remote` channel, try a TCP connect to the local
@@ -115,4 +131,10 @@ server side.")]
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
   },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum HostOutputFormat {
+  Table,
+  Json,
 }

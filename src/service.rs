@@ -314,7 +314,11 @@ pub struct ServiceStatus {
 impl ServiceStatus {
   /// Count of channels currently in `Connected` health.
   pub fn connected_count(&self) -> usize {
-    self.channels.iter().filter(|c| c.health.is_connected()).count()
+    self
+      .channels
+      .iter()
+      .filter(|c| c.health.is_connected())
+      .count()
   }
 
   /// Total channels known to the service.

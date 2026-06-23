@@ -294,8 +294,7 @@ fn build_entry(
   config: &HashMap<String, String>,
   defaults: &SshConfigDefaults,
 ) -> Option<SshConfigEntry> {
-  // Skip entries without HostName (they might be patterns or incomplete)
-  let hostname = config.get("hostname")?.clone();
+  let hostname = config.get("hostname").cloned();
 
   let port = config
     .get("port")
@@ -324,7 +323,7 @@ fn build_entry(
 
   Some(SshConfigEntry {
     host: host.to_string(),
-    hostname: Some(hostname),
+    hostname,
     port,
     user,
     identity_file,
@@ -448,6 +447,20 @@ Host myserver
     // Host "*" should not be included in entries
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].host, "myserver");
+  }
+
+  #[test]
+  fn host_without_hostname_is_kept_for_diagnostics() {
+    let content = r#"
+Host incomplete
+    User myuser
+"#;
+
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].host, "incomplete");
+    assert_eq!(entries[0].hostname, None);
+    assert_eq!(entries[0].user, Some("myuser".to_string()));
   }
 
   // --- ssh_config(5) compliance ---

@@ -283,6 +283,22 @@ ssh-channels-hub generate -o config.toml
 
 工具扫一遍 `~/.ssh/config`,为每个 alias 输出**注释掉的** `[[channels]]` 模板。取消注释、填上 `local` / `remote` 端口即可。无 `IdentityFile` 的 host 同时会附上 `[auth.<alias>]` 模板。
 
+### 4.9 检查 SSH host 支持状态
+
+```bash
+ssh-channels-hub hosts
+ssh-channels-hub hosts --ssh-config /path/to/ssh_config
+ssh-channels-hub hosts --format json
+```
+
+`hosts` 会列出 SSH config 里的每个 `Host <alias>` 以及本工具是否能使用它。默认读取 `~/.ssh/config`,默认输出面向人工查看的 table;`--format json` 输出稳定 JSON 数组,字段为 `alias`、`hostname`、`status`、`reasons`、`warnings`。
+
+判定规则:
+
+- `supported`:该 alias 有 `HostName` 和 `User`,目标 host 有 `IdentityFile` 或可在实际 channel 配置中补 `[auth.<alias>].password`,且 `ProxyJump` 链符合本工具限制。
+- `unsupported`:缺 `HostName`、缺 `User`、`ProxyJump` 写成 `user@host:port` raw target、`ProxyJump` alias 不存在、跳板 alias 缺必要字段或无可用 key。
+- 普通目标 host 无 `IdentityFile` 不直接判失败,但会给 warning:实际使用这个 host 的 channel 需要在 `config.toml` 中配置 `[auth.<alias>].password`。
+
 ## 5. 配置验证
 
 ```bash

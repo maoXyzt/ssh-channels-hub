@@ -162,6 +162,7 @@ local     = "80"                # 收到的连接桥接到本机 127.0.0.1:80
 | `test` | 测试每个 `local->remote` 的本地监听端口,确认隧道是通的。`remote->local` 的 channel 跳过,需要在服务器端实际连接验证。 |
 | `validate` | 把每个 channel 对照 `~/.ssh/config` 解析,列出问题。 |
 | `generate -o config.toml` | 根据 SSH config alias 生成 `config.toml` 脚手架。 |
+| `hosts` | 扫描 SSH config alias,显示每个 host 是否被本工具支持。脚本使用可加 `--format json`。 |
 
 所有命令都接受 `--config /path/to/config.toml` 来指向非默认配置文件,以及 `--debug` 打开详细日志。
 

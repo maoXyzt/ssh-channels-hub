@@ -305,7 +305,10 @@ impl SshManager {
 
     (|| {
       let n = attempt_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-      set_health(&health_for_attempt, ChannelHealth::Connecting { attempt: n });
+      set_health(
+        &health_for_attempt,
+        ChannelHealth::Connecting { attempt: n },
+      );
       let health = health.clone();
       let cancel = cancel.clone();
       async move { Self::establish_connection(config, cancel, health).await }
@@ -346,7 +349,11 @@ impl SshManager {
           "Establishing SSH connection"
       );
     } else {
-      let chain: Vec<&str> = config.proxy_jumps.iter().map(|h| h.alias.as_str()).collect();
+      let chain: Vec<&str> = config
+        .proxy_jumps
+        .iter()
+        .map(|h| h.alias.as_str())
+        .collect();
       info!(
           channel = %config.name,
           host = %config.host,
@@ -561,12 +568,7 @@ where
     );
     let prev = hops.last().expect("hops non-empty");
     let channel = prev
-      .channel_open_direct_tcpip(
-        config.host.as_str(),
-        config.port as u32,
-        "127.0.0.1",
-        0u32,
-      )
+      .channel_open_direct_tcpip(config.host.as_str(), config.port as u32, "127.0.0.1", 0u32)
       .await
       .map_err(|e| {
         AppError::SshConnection(format!(
@@ -577,9 +579,7 @@ where
     let stream = channel.into_stream();
     russh::client::connect_stream(russh_cfg, stream, terminal_handler)
       .await
-      .map_err(|e| {
-        AppError::SshConnection(format!("SSH handshake with target failed: {:?}", e))
-      })?
+      .map_err(|e| AppError::SshConnection(format!("SSH handshake with target failed: {:?}", e)))?
   };
 
   info!(channel = %config.name, "SSH connection established, authenticating");
@@ -637,9 +637,7 @@ where
       session
         .authenticate_publickey(username, Arc::new(key))
         .await
-        .map_err(|e| {
-          AppError::SshAuthentication(format!("Key authentication failed: {}", e))
-        })?;
+        .map_err(|e| AppError::SshAuthentication(format!("Key authentication failed: {}", e)))?;
     }
   }
   Ok(())

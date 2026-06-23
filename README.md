@@ -162,6 +162,7 @@ Full field reference: [docs/configuration.md](docs/configuration.md).
 | `test` | Probe each configured `local->remote` listener to confirm the tunnel is alive. `remote->local` channels are skipped — verify those server-side. |
 | `validate` | Resolve every channel against `~/.ssh/config` and report any problems. |
 | `generate -o config.toml` | Scaffold a `config.toml` from existing SSH config aliases. |
+| `hosts` | Scan SSH config aliases and show whether each host is supported. Use `--format json` for script-friendly output. |
 
 All commands accept `--config /path/to/config.toml` to point at a non-default file, and `--debug` for verbose logging.
 

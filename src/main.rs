@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod error;
+mod host_check;
 mod port_check;
 mod service;
 mod ssh;
@@ -9,8 +10,9 @@ mod ui;
 
 use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
 use clap::Parser;
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, HostOutputFormat};
 use config::AppConfig;
+use host_check::{HostSupportReport, HostSupportStatus, analyze_hosts};
 use port_check::{test_port_connection, test_tunnel_connection};
 use service::{ServiceManager, ServiceState};
 use ssh_config::{default_ssh_config_path, parse_ssh_config};
@@ -62,6 +64,9 @@ async fn main() -> AnyhowResult<()> {
     }
     Commands::Generate { ssh_config, output } => {
       handle_generate(ssh_config, output).await?;
+    }
+    Commands::Hosts { ssh_config, format } => {
+      handle_hosts(ssh_config, format).await?;
     }
     Commands::Test { config } => {
       let test_config_path = config.unwrap_or_else(AppConfig::default_path);
@@ -288,7 +293,9 @@ fn wire_to_channel_status(w: ChannelStatusWire) -> AnyhowResult<service::Channel
       attempt: w.attempt,
       last_error: w.last_error,
     },
-    "Failed" => service::ChannelHealth::Failed { error: w.last_error },
+    "Failed" => service::ChannelHealth::Failed {
+      error: w.last_error,
+    },
     other => return Err(anyhow::anyhow!("Unknown health in IPC: {}", other)),
   };
   Ok(service::ChannelStatus {
@@ -304,11 +311,7 @@ fn wire_to_channel_status(w: ChannelStatusWire) -> AnyhowResult<service::Channel
 fn status_to_toml(status: &service::ServiceStatus) -> String {
   let wire = ServiceStatusWire {
     state: service_state_label(&status.state).to_string(),
-    channels: status
-      .channels
-      .iter()
-      .map(channel_status_to_wire)
-      .collect(),
+    channels: status.channels.iter().map(channel_status_to_wire).collect(),
   };
   // Hand-pick toml encoding: the wire struct is intentionally flat so this
   // can't fail in practice; treat any error as an empty TOML so the client
@@ -818,6 +821,67 @@ async fn handle_generate(
   ui::hint("and replace LOCAL_PORT / REMOTE_PORT with concrete ports (or host:port).");
 
   Ok(())
+}
+
+/// Handle hosts command: report whether SSH config aliases are usable here.
+async fn handle_hosts(
+  ssh_config: Option<std::path::PathBuf>,
+  format: HostOutputFormat,
+) -> AnyhowResult<()> {
+  let ssh_config_path = ssh_config.unwrap_or_else(default_ssh_config_path);
+  let entries = parse_ssh_config(&ssh_config_path).context("Failed to parse SSH config file")?;
+  let reports = analyze_hosts(&entries);
+
+  match format {
+    HostOutputFormat::Json => {
+      println!(
+        "{}",
+        serde_json::to_string_pretty(&reports).context("Serialize host report as JSON")?
+      );
+    }
+    HostOutputFormat::Table => {
+      render_hosts_table(&ssh_config_path, &reports);
+    }
+  }
+
+  Ok(())
+}
+
+fn render_hosts_table(ssh_config_path: &Path, reports: &[HostSupportReport]) {
+  ui::header("🖥️", "SSH host support");
+  ui::kv_dim("SSH config", ssh_config_path.display());
+  ui::kv("Hosts", reports.len());
+
+  if reports.is_empty() {
+    println!();
+    ui::warn("No Host blocks found.");
+    ui::hint("Add Host aliases to SSH config, then re-run `ssh-channels-hub hosts`.");
+    return;
+  }
+
+  println!();
+  for report in reports {
+    let target = report.hostname.as_deref().unwrap_or("?");
+    let status = match report.status {
+      HostSupportStatus::Supported => "supported",
+      HostSupportStatus::Unsupported => "unsupported",
+    };
+
+    println!("  [{}] -> {}  {}", report.alias, target, status);
+
+    match report.status {
+      HostSupportStatus::Supported => {
+        for warning in &report.warnings {
+          println!("      warning: {}", warning);
+        }
+      }
+      HostSupportStatus::Unsupported => {
+        for reason in &report.reasons {
+          println!("      reason: {}", reason);
+        }
+      }
+    }
+  }
 }
 
 /// Handle test command - verify channels are working
