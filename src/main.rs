@@ -424,6 +424,15 @@ async fn query_status_via_ipc(config_path: &Path) -> AnyhowResult<service::Servi
   parse_status_toml(&body).context("Parse status response")
 }
 
+fn is_daemon_unreachable(error: &anyhow::Error) -> bool {
+  error.chain().any(|cause| {
+    let msg = cause.to_string();
+    msg.contains("Read port file")
+      || msg.contains("Parse port file")
+      || msg.contains("Connect to service")
+  })
+}
+
 fn parse_status_toml(s: &str) -> AnyhowResult<service::ServiceStatus> {
   let r: ServiceStatusWire = toml::from_str(s).context("Parse status TOML")?;
   let state = match r.state.as_str() {
@@ -528,20 +537,35 @@ struct StatusFrame {
 /// non-blocking enough for the watch loop.
 async fn render_status_once(config_path: &Path) -> StatusFrame {
   // IPC fast path — daemon is alive
-  if let Ok(status) = query_status_via_ipc(config_path).await {
-    let pid = std::fs::read_to_string(pid_file_path(config_path))
-      .ok()
-      .as_deref()
-      .map(str::trim)
-      .filter(|s| !s.is_empty())
-      .map(|s| s.to_string());
-    return StatusFrame {
-      status,
-      pid,
-      note: None,
-      config_missing: false,
-      config_error: None,
-    };
+  match query_status_via_ipc(config_path).await {
+    Ok(status) => {
+      let pid = std::fs::read_to_string(pid_file_path(config_path))
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+      return StatusFrame {
+        status,
+        pid,
+        note: None,
+        config_missing: false,
+        config_error: None,
+      };
+    }
+    Err(e) if !is_daemon_unreachable(&e) => {
+      return StatusFrame {
+        status: service::ServiceStatus {
+          state: ServiceState::Stopped,
+          channels: Vec::new(),
+        },
+        pid: None,
+        note: None,
+        config_missing: false,
+        config_error: Some(format!("Failed to query daemon status: {}", e)),
+      };
+    }
+    Err(_) => {}
   }
 
   if !config_path.exists() {
@@ -1117,6 +1141,45 @@ remote = "127.0.0.1:2"
 health = "Connected"
 "#;
     assert!(parse_status_toml(bogus).is_err());
+  }
+
+  #[tokio::test]
+  async fn render_status_reports_daemon_protocol_errors() {
+    let unique = format!(
+      "ssh-channels-hub-status-test-{}-{}",
+      std::process::id(),
+      std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(unique);
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join("config.toml");
+    std::fs::write(&config_path, "[reconnection]\n").unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    write_port_file(&port_file_path(&config_path), port).unwrap();
+    let server = tokio::spawn(async move {
+      let (mut stream, _) = listener.accept().await.unwrap();
+      let _ = read_line_async(&mut stream).await.unwrap();
+      stream.write_all(b"not valid toml").await.unwrap();
+      stream.shutdown().await.unwrap();
+    });
+
+    let frame = render_status_once(&config_path).await;
+    server.await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+      frame
+        .config_error
+        .as_deref()
+        .is_some_and(|e| e.contains("Failed to query daemon status")),
+      "expected daemon query error, got {:?}",
+      frame.config_error
+    );
   }
 
   #[test]

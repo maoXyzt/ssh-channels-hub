@@ -127,7 +127,7 @@ pub struct JumpHopConfig {
     pub host: String,                          // HostName
     pub port: u16,                             // Port,默认 22
     pub username: String,                      // User
-    pub key_path: PathBuf,                     // 显式 IdentityFile > Host * > 默认 key
+    pub key_path: PathBuf,                     // 显式 IdentityFile > Host * > 唯一默认 key
 }
 ```
 

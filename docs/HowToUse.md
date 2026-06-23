@@ -197,7 +197,7 @@ remote    = "80"
 跳板和目标都写成 `~/.ssh/config` 的 `Host` 别名,在目标的 `ProxyJump` 字段引用跳板别名。多跳就用逗号串起来(顺序从外到内)。
 
 `~/.ssh/config`:
-```
+```text
 Host bastion
   HostName bastion.example.com
   User opsadmin
@@ -383,7 +383,8 @@ ssh-channels-hub validate --debug
 - `missing HostName / User` → SSH config 中该 alias 不完整
 - `has no IdentityFile ... and no [auth.X].password` → 二选一补全
 - `has ProxyJump 'user@host:port' written as a raw target` → 把跳板写成 `Host` 别名,然后 `ProxyJump` 引用别名
-- `ProxyJump alias '...' ... no IdentityFile and no default key ... exists` → 给跳板别名补 `IdentityFile`,或在 `~/.ssh/` 放一个常见名字的 key
+- `ProxyJump alias '...' ... no IdentityFile and no default key ... exists` → 给跳板别名补 `IdentityFile`,或只保留一个常见名字的默认 key
+- `ProxyJump alias '...' ... multiple default keys exist` → 在跳板别名上显式写 `IdentityFile`,不要让工具猜 key
 - `ProxyJump alias '...' uses encrypted IdentityFile` → 跳板的 key 不能加密;换未加密 key 或解密
 - `ProxyJump '... IdentityFile '...' does not exist on disk`(validate 时)→ 路径解析出来了但文件不存在,补上文件或改 `IdentityFile` 指向
 - `ProxyJump '...': no entry for ...:port in known_hosts`(validate warning)→ 跑一次 `ssh-keyscan` 或手动 `ssh <alias>` 让 OpenSSH 写入

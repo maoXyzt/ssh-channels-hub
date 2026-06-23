@@ -27,44 +27,43 @@ pub fn analyze_hosts(entries: &[SshConfigEntry]) -> Vec<HostSupportReport> {
     .map(|entry| (entry.host.as_str(), entry))
     .collect();
   let default_keys = ssh_config::default_identity_file_candidates();
+  let default_key_count = default_keys.len();
 
   entries
     .iter()
-    .map(|entry| analyze_host(entry, &by_alias, !default_keys.is_empty()))
+    .map(|entry| analyze_host(entry, &by_alias, default_key_count))
     .collect()
 }
 
 fn analyze_host(
   entry: &SshConfigEntry,
   by_alias: &HashMap<&str, &SshConfigEntry>,
-  has_default_key: bool,
+  default_key_count: usize,
 ) -> HostSupportReport {
-  let mut reasons = Vec::new();
+  let mut failure_reasons = Vec::new();
+  let mut success_reasons = Vec::new();
   let mut warnings = Vec::new();
-  let mut is_supported = true;
 
   if entry.hostname.is_none() {
-    is_supported = false;
-    reasons.push("missing `HostName`".to_string());
+    failure_reasons.push("missing `HostName`".to_string());
   }
 
   if entry.user.is_none() {
-    is_supported = false;
-    reasons.push("missing `User`".to_string());
+    failure_reasons.push("missing `User`".to_string());
   }
 
   if entry.hostname.is_some() && entry.user.is_some() {
-    reasons.push("HostName and User are present".to_string());
+    success_reasons.push("HostName and User are present".to_string());
   }
 
   if entry.identity_file.is_some() {
-    reasons.push("authentication can use `IdentityFile`".to_string());
+    success_reasons.push("authentication can use `IdentityFile`".to_string());
   } else if entry.user.is_some() && entry.hostname.is_some() {
     warnings.push(format!(
       "no `IdentityFile`; provide `[auth.{}].password` in channel config when using this host",
       entry.host
     ));
-    reasons.push("authentication can be supplied by channel config password".to_string());
+    success_reasons.push("authentication can be supplied by channel config password".to_string());
   }
 
   let mut proxy_jump = entry.proxy_jump.clone();
@@ -74,8 +73,7 @@ fn analyze_host(
     match parse_proxy_command_to_alias(proxy_command) {
       Some(alias) => proxy_jump.push(alias),
       None => {
-        is_supported = false;
-        reasons.push(format!(
+        failure_reasons.push(format!(
           "`ProxyCommand {proxy_command}` is unsupported; use `ProxyJump <alias>` or `ProxyCommand ssh <alias> -W %h:%p`"
         ));
       }
@@ -84,49 +82,50 @@ fn analyze_host(
 
   for token in &proxy_jump {
     if token.contains('@') || token.contains(':') {
-      is_supported = false;
-      reasons.push(format!(
+      failure_reasons.push(format!(
         "ProxyJump '{token}' is a raw target; define a `Host <alias>` block and reference that alias"
       ));
       continue;
     }
 
     let Some(jump_entry) = by_alias.get(token.as_str()).copied() else {
-      is_supported = false;
-      reasons.push(format!(
+      failure_reasons.push(format!(
         "ProxyJump '{token}' references no `Host {token}` block"
       ));
       continue;
     };
 
     if jump_entry.hostname.is_none() {
-      is_supported = false;
-      reasons.push(format!("ProxyJump alias '{token}' is missing `HostName`"));
+      failure_reasons.push(format!("ProxyJump alias '{token}' is missing `HostName`"));
     }
     if jump_entry.user.is_none() {
-      is_supported = false;
-      reasons.push(format!("ProxyJump alias '{token}' is missing `User`"));
+      failure_reasons.push(format!("ProxyJump alias '{token}' is missing `User`"));
     }
-    if jump_entry.identity_file.is_none() && !has_default_key {
-      is_supported = false;
-      reasons.push(format!(
-        "ProxyJump alias '{token}' has no `IdentityFile` and no default key is available"
-      ));
+    if jump_entry.identity_file.is_none() {
+      match default_key_count {
+        0 => failure_reasons.push(format!(
+          "ProxyJump alias '{token}' has no `IdentityFile` and no default key is available"
+        )),
+        1 => {}
+        _ => failure_reasons.push(format!(
+          "ProxyJump alias '{token}' has no `IdentityFile` and multiple default keys are available"
+        )),
+      }
     }
   }
 
-  if is_supported {
+  if failure_reasons.is_empty() {
     if proxy_jump.is_empty() {
-      reasons.push("no ProxyJump chain".to_string());
+      success_reasons.push("no ProxyJump chain".to_string());
     } else {
-      reasons.push("ProxyJump chain uses resolvable aliases".to_string());
+      success_reasons.push("ProxyJump chain uses resolvable aliases".to_string());
     }
   }
 
-  let status = if is_supported {
-    HostSupportStatus::Supported
+  let (status, reasons) = if failure_reasons.is_empty() {
+    (HostSupportStatus::Supported, success_reasons)
   } else {
-    HostSupportStatus::Unsupported
+    (HostSupportStatus::Unsupported, failure_reasons)
   };
 
   HostSupportReport {

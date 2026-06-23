@@ -611,18 +611,29 @@ fn resolve_jump_chain(
     })?;
     let port = jump_entry.port.unwrap_or(22);
 
-    let key_path = jump_entry
-      .identity_file
-      .clone()
-      .or_else(|| default_keys.first().cloned())
-      .ok_or_else(|| {
-        AppError::Config(format!(
-          "ProxyJump alias '{}' (used by channel host '{}') has no `IdentityFile` \
-           and no default key (`~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, `id_dsa`) \
-           exists. This tool supports publickey-only auth on jump hosts.",
-          token, channel_alias
-        ))
-      })?;
+    let key_path = if let Some(key_path) = jump_entry.identity_file.clone() {
+      key_path
+    } else {
+      match default_keys {
+        [only] => only.clone(),
+        [] => {
+          return Err(AppError::Config(format!(
+            "ProxyJump alias '{}' (used by channel host '{}') has no `IdentityFile` \
+             and no default key (`~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`, `id_dsa`) \
+             exists. This tool supports publickey-only auth on jump hosts.",
+            token, channel_alias
+          )));
+        }
+        _ => {
+          return Err(AppError::Config(format!(
+            "ProxyJump alias '{}' (used by channel host '{}') has no `IdentityFile`, \
+             and multiple default keys exist. Add `IdentityFile` to `Host {}` so \
+             the daemon uses the intended jump key.",
+            token, channel_alias, token
+          )));
+        }
+      }
+    };
 
     chain.push(JumpHopConfig {
       alias: token.clone(),
@@ -1033,6 +1044,40 @@ mod tests {
       resolve_jump_chain("t", &target, &by_alias, std::slice::from_ref(&default)).unwrap();
     assert_eq!(chain.len(), 1);
     assert_eq!(chain[0].key_path, default);
+  }
+
+  #[test]
+  fn jump_chain_errors_when_multiple_default_keys_could_match() {
+    let bastion = make_entry(
+      "bastion",
+      Some("b.example.com"),
+      Some("u"),
+      None,
+      None,
+      vec![],
+    );
+    let target = make_entry(
+      "t",
+      Some("t.example.com"),
+      Some("u"),
+      None,
+      None,
+      vec!["bastion".to_string()],
+    );
+    let by_alias: HashMap<&str, &ssh_config::SshConfigEntry> =
+      [("t", &target), ("bastion", &bastion)]
+        .into_iter()
+        .collect();
+    let default_keys = [
+      PathBuf::from("/home/u/.ssh/id_ed25519"),
+      PathBuf::from("/home/u/.ssh/id_rsa"),
+    ];
+    let err = resolve_jump_chain("t", &target, &by_alias, &default_keys).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+      msg.contains("multiple default keys") && msg.contains("Host bastion"),
+      "expected ambiguous-default-key message, got: {msg}"
+    );
   }
 
   #[test]

@@ -598,7 +598,7 @@ async fn authenticate_jump_publickey(
   key_path: &Path,
 ) -> Result<()> {
   let key = load_jump_key(key_path, alias).await?;
-  session
+  let authenticated = session
     .authenticate_publickey(username, Arc::new(key))
     .await
     .map_err(|e| {
@@ -607,6 +607,10 @@ async fn authenticate_jump_publickey(
         alias, e
       ))
     })?;
+  ensure_auth_succeeded(
+    authenticated,
+    format!("Public-key auth rejected at ProxyJump '{}'", alias),
+  )?;
   Ok(())
 }
 
@@ -622,25 +626,38 @@ where
 {
   match auth {
     AuthConfig::Password { password } => {
-      session
+      let authenticated = session
         .authenticate_password(username, password)
         .await
         .map_err(|e| {
           AppError::SshAuthentication(format!("Password authentication failed: {}", e))
         })?;
+      ensure_auth_succeeded(authenticated, "Password authentication rejected")?;
     }
     AuthConfig::Key {
       key_path,
       passphrase,
     } => {
       let key = load_secret_key(key_path, passphrase.as_deref()).await?;
-      session
+      let authenticated = session
         .authenticate_publickey(username, Arc::new(key))
         .await
         .map_err(|e| AppError::SshAuthentication(format!("Key authentication failed: {}", e)))?;
+      ensure_auth_succeeded(authenticated, "Key authentication rejected")?;
     }
   }
   Ok(())
+}
+
+fn ensure_auth_succeeded(
+  message_is_success: bool,
+  rejected_message: impl Into<String>,
+) -> Result<()> {
+  if message_is_success {
+    Ok(())
+  } else {
+    Err(AppError::SshAuthentication(rejected_message.into()))
+  }
 }
 
 /// Load an unencrypted private key for a jump hop. Surfaces a tailored error
@@ -801,5 +818,25 @@ async fn run_direct_tcpip_listener(
             }
         }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn auth_success_helper_accepts_true() {
+    assert!(ensure_auth_succeeded(true, "password authentication rejected").is_ok());
+  }
+
+  #[test]
+  fn auth_success_helper_rejects_false() {
+    let err = ensure_auth_succeeded(false, "password authentication rejected").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+      msg.contains("password authentication rejected"),
+      "expected rejected auth message, got: {msg}"
+    );
   }
 }

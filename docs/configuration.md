@@ -113,7 +113,7 @@ key 是 SSH config 里的 alias 字符串。**没有覆盖需求的 host 不需�
 **ProxyJump 限制**:
 
 - 值必须是已经在 `~/.ssh/config` 里定义为 `Host <alias>` 的别名,可以用逗号串成多跳(`ProxyJump alpha,beta`)。原始的 `user@host:port` 形式会被拒绝,提示用户先把跳板写成一个 `Host` 块。
-- 跳板仅支持 **publickey 认证**。密钥按 ssh 命令的惯例查找:跳板别名显式 `IdentityFile` > `Host *` 全局 `IdentityFile` > 默认路径(`~/.ssh/id_ed25519` → `id_ecdsa` → `id_rsa` → `id_dsa`,取第一个存在的)。
+- 跳板仅支持 **publickey 认证**。密钥按 ssh 命令的惯例查找:跳板别名显式 `IdentityFile` > `Host *` 全局 `IdentityFile` > 默认路径(`~/.ssh/id_ed25519` / `id_ecdsa` / `id_rsa` / `id_dsa`)。默认路径只在刚好找到一个 key 时自动使用;如果找到多个默认 key,工具会要求你在跳板 `Host` 上显式写 `IdentityFile`,避免选错 key。
 - 跳板的 IdentityFile **不能被 passphrase 加密**(守护进程没法交互输入)。如果是加密的 key,请解密或换一把未加密的 key。
 - 跳板会**严格校验** `~/.ssh/known_hosts`:未记录的跳板主机会被拒绝(不做 TOFU 自动追加)。第一次使用前先 `ssh-keyscan` 写入,或手动 `ssh <alias>` 一次让 OpenSSH 帮你写。
 - 跳板别名自己的 `ProxyJump` 设置**不会递归生效**:本工具只读取 channel 目标 host 自身的 `ProxyJump` 链,不再深入。如果你的跳板别名也写了 `ProxyJump`,本工具会忽略,直接把它当成最终一跳。如有真的多级跳板需求,请在目标 host 的 `ProxyJump` 里把所有跳板按顺序逗号列出。
@@ -242,7 +242,7 @@ remote    = "80"
 ### 4.7 通过 ProxyJump 访问内网 host
 
 `~/.ssh/config`:
-```
+```text
 Host bastion
   HostName bastion.example.com
   User opsadmin
@@ -313,7 +313,7 @@ ssh-channels-hub validate --config /path/to/config.toml
 - 该 alias 有 `IdentityFile` 或 `[auth.<alias>].password` 二选一
 - `direction` 取值合法
 - `local` / `remote` 是合法的 `port` 或 `host:port`
-- 如果 channel 走 `ProxyJump`:每一跳的别名都已定义、有 `User` 和 `HostName`、有可用的 publickey(显式 `IdentityFile`、`Host *` 全局,或 `~/.ssh/id_*` 默认 key 其一)
+- 如果 channel 走 `ProxyJump`:每一跳的别名都已定义、有 `User` 和 `HostName`、有可用的 publickey(显式 `IdentityFile`、`Host *` 全局,或唯一一个 `~/.ssh/id_*` 默认 key)
 - 如果有 `ProxyJump`,还会做两项环境前置检查:
   - **失败**:跳板的 `IdentityFile` 文件确实不存在(键路径已解析但落不到磁盘)
   - **警告**:跳板主机在 `~/.ssh/known_hosts` 中没有对应记录(运行时会被严格校验拒绝)
@@ -345,6 +345,10 @@ ProxyJump 写成了 `user@host:port` 的字面形式。在 `~/.ssh/config` 里�
 ### `ProxyJump alias 'X' ... has no IdentityFile and no default key ... exists`
 
 跳板别名没有显式 `IdentityFile`,`Host *` 也没设默认,而 `~/.ssh/` 下没有 `id_ed25519 / id_ecdsa / id_rsa / id_dsa` 任何一个常见 key。给该跳板加 `IdentityFile`,或者把你常用的 key 改成上述任一标准文件名。
+
+### `ProxyJump alias 'X' ... multiple default keys exist`
+
+跳板别名没有显式 `IdentityFile`,但 `~/.ssh/` 下存在多个默认 key。工具不会猜哪一把 key 应该用于跳板;在跳板的 `Host X` 块里补上明确的 `IdentityFile`。
 
 ### `ProxyJump alias 'X' uses encrypted IdentityFile`
 

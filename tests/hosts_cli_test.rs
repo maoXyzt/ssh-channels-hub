@@ -2,14 +2,30 @@ use serde_json::Value;
 use ssh_channels_hub::host_check::{HostSupportStatus, analyze_hosts};
 use ssh_channels_hub::ssh_config::parse_ssh_config;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-fn write_ssh_config(content: &str) -> PathBuf {
+struct TempConfig {
+  path: PathBuf,
+}
+
+impl TempConfig {
+  fn path(&self) -> &Path {
+    &self.path
+  }
+}
+
+impl Drop for TempConfig {
+  fn drop(&mut self) {
+    let _ = fs::remove_file(&self.path);
+  }
+}
+
+fn write_ssh_config(content: &str) -> TempConfig {
   let unique = SystemTime::now()
     .duration_since(UNIX_EPOCH)
     .unwrap()
@@ -20,12 +36,12 @@ fn write_ssh_config(content: &str) -> PathBuf {
     std::process::id()
   ));
   fs::write(&path, content).expect("write temp ssh config");
-  path
+  TempConfig { path }
 }
 
 fn analyze(content: &str) -> Vec<ssh_channels_hub::host_check::HostSupportReport> {
-  let path = write_ssh_config(content);
-  let entries = parse_ssh_config(&path).expect("parse ssh config");
+  let config = write_ssh_config(content);
+  let entries = parse_ssh_config(config.path()).expect("parse ssh config");
   analyze_hosts(&entries)
 }
 
@@ -64,6 +80,14 @@ Host app
       .iter()
       .any(|reason| reason.contains("missing `User`")),
     "expected missing User reason, got {:?}",
+    reports[0].reasons
+  );
+  assert!(
+    reports[0]
+      .reasons
+      .iter()
+      .all(|reason| !reason.contains("authentication can use")),
+    "unsupported reasons should only contain fixable failures, got {:?}",
     reports[0].reasons
   );
 }
@@ -137,7 +161,7 @@ Host app
 
 #[test]
 fn hosts_format_json_outputs_complete_fields() {
-  let path = write_ssh_config(
+  let config = write_ssh_config(
     r#"
 Host app
     HostName app.example.com
@@ -148,7 +172,7 @@ Host app
 
   let output = Command::new(env!("CARGO_BIN_EXE_ssh-channels-hub"))
     .args(["hosts", "--ssh-config"])
-    .arg(path)
+    .arg(config.path())
     .args(["--format", "json", "--no-color"])
     .output()
     .expect("run hosts command");

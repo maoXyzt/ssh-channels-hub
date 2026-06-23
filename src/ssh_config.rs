@@ -30,8 +30,10 @@ struct SshConfigDefaults {
   port: Option<u16>,
   user: Option<String>,
   identity_file: Option<PathBuf>,
-  proxy_jump: Vec<String>,
-  proxy_command: Option<String>,
+  /// Outer Option means the directive was seen; empty Vec means `ProxyJump none`.
+  proxy_jump: Option<Vec<String>>,
+  /// Outer Option means the directive was seen; inner None means `ProxyCommand none`.
+  proxy_command: Option<Option<String>>,
 }
 
 /// Parse SSH config file
@@ -111,10 +113,12 @@ fn parse_ssh_config_content(content: &str) -> Result<Vec<SshConfigEntry>> {
         defaults.port = defaults.port.or(new.port);
         defaults.user = defaults.user.take().or(new.user);
         defaults.identity_file = defaults.identity_file.take().or(new.identity_file);
-        if defaults.proxy_jump.is_empty() {
+        if defaults.proxy_jump.is_none() {
           defaults.proxy_jump = new.proxy_jump;
         }
-        defaults.proxy_command = defaults.proxy_command.take().or(new.proxy_command);
+        if defaults.proxy_command.is_none() {
+          defaults.proxy_command = new.proxy_command;
+        }
       } else {
         for alias in aliases.iter() {
           if let Some(entry) = build_entry(alias, cfg, defaults) {
@@ -243,11 +247,10 @@ fn extract_defaults(config: &HashMap<String, String>) -> SshConfigDefaults {
     identity_file: config
       .get("identityfile")
       .and_then(|p| expand_tilde_in_path(p)),
-    proxy_jump: config
-      .get("proxyjump")
-      .map(|v| parse_proxy_jump_value(v))
-      .unwrap_or_default(),
-    proxy_command: config.get("proxycommand").cloned(),
+    proxy_jump: config.get("proxyjump").map(|v| parse_proxy_jump_value(v)),
+    proxy_command: config
+      .get("proxycommand")
+      .map(|v| parse_proxy_command_value(v)),
   }
 }
 
@@ -255,11 +258,23 @@ fn extract_defaults(config: &HashMap<String, String>) -> SshConfigDefaults {
 /// empties dropped). Tokens may be bare aliases or `user@host:port` forms —
 /// this parser is permissive; validation lives in the caller (config.rs).
 fn parse_proxy_jump_value(value: &str) -> Vec<String> {
+  if value.eq_ignore_ascii_case("none") {
+    return Vec::new();
+  }
+
   value
     .split(',')
     .map(|s| s.trim().to_string())
     .filter(|s| !s.is_empty())
     .collect()
+}
+
+fn parse_proxy_command_value(value: &str) -> Option<String> {
+  if value.eq_ignore_ascii_case("none") {
+    None
+  } else {
+    Some(value.to_string())
+  }
 }
 
 /// Parse a directive line such as `HostName example.com`, `Port=2222`, or
@@ -314,12 +329,13 @@ fn build_entry(
   let proxy_jump = config
     .get("proxyjump")
     .map(|v| parse_proxy_jump_value(v))
-    .unwrap_or_else(|| defaults.proxy_jump.clone());
+    .or_else(|| defaults.proxy_jump.clone())
+    .unwrap_or_default();
 
-  let proxy_command = config
-    .get("proxycommand")
-    .cloned()
-    .or_else(|| defaults.proxy_command.clone());
+  let proxy_command = match config.get("proxycommand") {
+    Some(v) => parse_proxy_command_value(v),
+    None => defaults.proxy_command.clone().flatten(),
+  };
 
   Some(SshConfigEntry {
     host: host.to_string(),
@@ -711,6 +727,23 @@ Host self-jumped
   }
 
   #[test]
+  fn proxy_jump_none_overrides_wildcard_default() {
+    let content = r#"
+Host *
+    ProxyJump bastion
+
+Host direct
+    HostName direct.example.com
+    User u
+    ProxyJump none
+"#;
+
+    let entries = parse_ssh_config_content(content).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(entries[0].proxy_jump.is_empty());
+  }
+
+  #[test]
   fn proxy_command_is_stored_verbatim() {
     // The parser is permissive; config.rs decides whether the value is one
     // of the supported shapes.
@@ -744,6 +777,23 @@ Host target
       target.proxy_command.as_deref(),
       Some("ssh global-bastion -W %h:%p")
     );
+  }
+
+  #[test]
+  fn proxy_command_none_overrides_wildcard_default() {
+    let content = r#"
+Host *
+    ProxyCommand ssh global-bastion -W %h:%p
+
+Host direct
+    HostName direct.example.com
+    User u
+    ProxyCommand none
+"#;
+
+    let entries = parse_ssh_config_content(content).unwrap();
+    let direct = entries.iter().find(|e| e.host == "direct").unwrap();
+    assert_eq!(direct.proxy_command, None);
   }
 
   #[test]
