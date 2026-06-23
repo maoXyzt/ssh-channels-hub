@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod error;
+mod host_check;
 mod port_check;
 mod service;
 mod ssh;
@@ -9,8 +10,9 @@ mod ui;
 
 use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
 use clap::Parser;
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, HostOutputFormat};
 use config::AppConfig;
+use host_check::{HostSupportReport, HostSupportStatus, analyze_hosts};
 use port_check::{test_port_connection, test_tunnel_connection};
 use service::{ServiceManager, ServiceState};
 use ssh_config::{default_ssh_config_path, parse_ssh_config};
@@ -53,8 +55,8 @@ async fn main() -> AnyhowResult<()> {
     Commands::Restart => {
       handle_restart(config_path, cli.debug).await?;
     }
-    Commands::Status => {
-      handle_status(config_path).await?;
+    Commands::Status { watch, interval } => {
+      handle_status(config_path, watch, interval).await?;
     }
     Commands::Validate { config } => {
       let path = config.or(Some(config_path));
@@ -62,6 +64,9 @@ async fn main() -> AnyhowResult<()> {
     }
     Commands::Generate { ssh_config, output } => {
       handle_generate(ssh_config, output).await?;
+    }
+    Commands::Hosts { ssh_config, format } => {
+      handle_hosts(ssh_config, format).await?;
     }
     Commands::Test { config } => {
       let test_config_path = config.unwrap_or_else(AppConfig::default_path);
@@ -218,19 +223,100 @@ fn remove_run_files(config_path: &Path) -> AnyhowResult<()> {
   Ok(())
 }
 
-/// Serialize ServiceStatus to TOML (one-way protocol: server sends, client reads).
-fn status_to_toml(status: &service::ServiceStatus) -> String {
-  let state_str = match &status.state {
+/// Wire format for the IPC `status` reply. Distinct from `ServiceStatus` so
+/// the runtime types can carry richer enums (with payload) while the on-wire
+/// schema stays TOML-friendly.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ServiceStatusWire {
+  state: String,
+  #[serde(default)]
+  channels: Vec<ChannelStatusWire>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ChannelStatusWire {
+  name: String,
+  direction: String, // "local->remote" / "remote->local"
+  local: String,
+  remote: String,
+  health: String, // "Stopped" / "Connecting" / "Connected" / "Reconnecting" / "Failed"
+  #[serde(default)]
+  attempt: u32, // 0 when N/A
+  #[serde(default)]
+  last_error: String, // "" when N/A
+}
+
+fn service_state_label(s: &ServiceState) -> &'static str {
+  match s {
     ServiceState::Running => "Running",
     ServiceState::Stopped => "Stopped",
     ServiceState::Starting => "Starting",
     ServiceState::Stopping => "Stopping",
     ServiceState::Error(_) => "Error",
+  }
+}
+
+fn channel_status_to_wire(c: &service::ChannelStatus) -> ChannelStatusWire {
+  let (health, attempt, last_error) = match &c.health {
+    service::ChannelHealth::Stopped => ("Stopped", 0, String::new()),
+    service::ChannelHealth::Connecting { attempt } => ("Connecting", *attempt, String::new()),
+    service::ChannelHealth::Connected => ("Connected", 0, String::new()),
+    service::ChannelHealth::Reconnecting {
+      attempt,
+      last_error,
+    } => ("Reconnecting", *attempt, last_error.clone()),
+    service::ChannelHealth::Failed { error } => ("Failed", 0, error.clone()),
   };
-  format!(
-    "state = \"{}\"\nactive_channels = {}\ntotal_channels = {}",
-    state_str, status.active_channels, status.total_channels
-  )
+  ChannelStatusWire {
+    name: c.name.clone(),
+    direction: c.direction.as_arrow().to_string(),
+    local: c.local.clone(),
+    remote: c.remote.clone(),
+    health: health.to_string(),
+    attempt,
+    last_error,
+  }
+}
+
+fn wire_to_channel_status(w: ChannelStatusWire) -> AnyhowResult<service::ChannelStatus> {
+  use crate::config::Direction;
+  let direction = match w.direction.as_str() {
+    "local->remote" => Direction::LocalToRemote,
+    "remote->local" => Direction::RemoteToLocal,
+    other => return Err(anyhow::anyhow!("Unknown direction in IPC: {}", other)),
+  };
+  let health = match w.health.as_str() {
+    "Stopped" => service::ChannelHealth::Stopped,
+    "Connecting" => service::ChannelHealth::Connecting { attempt: w.attempt },
+    "Connected" => service::ChannelHealth::Connected,
+    "Reconnecting" => service::ChannelHealth::Reconnecting {
+      attempt: w.attempt,
+      last_error: w.last_error,
+    },
+    "Failed" => service::ChannelHealth::Failed {
+      error: w.last_error,
+    },
+    other => return Err(anyhow::anyhow!("Unknown health in IPC: {}", other)),
+  };
+  Ok(service::ChannelStatus {
+    name: w.name,
+    direction,
+    local: w.local,
+    remote: w.remote,
+    health,
+  })
+}
+
+/// Serialize ServiceStatus to TOML (one-way protocol: server sends, client reads).
+fn status_to_toml(status: &service::ServiceStatus) -> String {
+  let wire = ServiceStatusWire {
+    state: service_state_label(&status.state).to_string(),
+    channels: status.channels.iter().map(channel_status_to_wire).collect(),
+  };
+  // Hand-pick toml encoding: the wire struct is intentionally flat so this
+  // can't fail in practice; treat any error as an empty TOML so the client
+  // doesn't choke on garbage.
+  toml::to_string(&wire).unwrap_or_default()
 }
 
 /// Bind TCP on 127.0.0.1:0, write port to file, spawn task that accepts connections and responds with current status.
@@ -338,27 +424,29 @@ async fn query_status_via_ipc(config_path: &Path) -> AnyhowResult<service::Servi
   parse_status_toml(&body).context("Parse status response")
 }
 
-#[derive(serde::Deserialize)]
-struct StatusResponse {
-  state: String,
-  active_channels: usize,
-  total_channels: usize,
+fn is_daemon_unreachable(error: &anyhow::Error) -> bool {
+  error.chain().any(|cause| {
+    let msg = cause.to_string();
+    msg.contains("Read port file")
+      || msg.contains("Parse port file")
+      || msg.contains("Connect to service")
+  })
 }
 
 fn parse_status_toml(s: &str) -> AnyhowResult<service::ServiceStatus> {
-  let r: StatusResponse = toml::from_str(s).context("Parse status TOML")?;
+  let r: ServiceStatusWire = toml::from_str(s).context("Parse status TOML")?;
   let state = match r.state.as_str() {
     "Running" => ServiceState::Running,
     "Stopped" => ServiceState::Stopped,
     "Starting" => ServiceState::Starting,
     "Stopping" => ServiceState::Stopping,
     "Error" => ServiceState::Error(String::new()),
-    _ => return Err(anyhow::anyhow!("Unknown state: {}", r.state)),
+    other => return Err(anyhow::anyhow!("Unknown state: {}", other)),
   };
+  let channels: AnyhowResult<Vec<_>> = r.channels.into_iter().map(wire_to_channel_status).collect();
   Ok(service::ServiceStatus {
     state,
-    active_channels: r.active_channels,
-    total_channels: r.total_channels,
+    channels: channels?,
   })
 }
 
@@ -435,28 +523,108 @@ async fn handle_restart(config_path: std::path::PathBuf, debug: bool) -> AnyhowR
   Ok(())
 }
 
-/// Handle status command: connect to main process via IPC to get live status.
-async fn handle_status(config_path: PathBuf) -> AnyhowResult<()> {
-  // Try IPC first: connect to running main process
-  if let Ok(status) = query_status_via_ipc(&config_path).await {
-    let pid = std::fs::read_to_string(pid_file_path(&config_path)).ok();
-    let pid_str = pid
-      .as_deref()
-      .map(str::trim)
-      .filter(|s| !s.is_empty())
-      .map(|s| s.to_string());
+/// What `render_status_once` produces — the bits needed to draw one frame.
+struct StatusFrame {
+  status: service::ServiceStatus,
+  pid: Option<String>,
+  note: Option<String>,
+  config_missing: bool,
+  config_error: Option<String>,
+}
 
-    ui::print_service_status(&status, &config_path, pid_str.as_deref(), None);
-
-    if let Ok(config) = AppConfig::from_file(&config_path) {
-      println!();
-      ui::channel_list(&config.channels);
+/// Compose the next status frame. Tries IPC first; falls back to reading
+/// config.toml and showing each channel as `Stopped`. Both paths are
+/// non-blocking enough for the watch loop.
+async fn render_status_once(config_path: &Path) -> StatusFrame {
+  // IPC fast path — daemon is alive
+  match query_status_via_ipc(config_path).await {
+    Ok(status) => {
+      let pid = std::fs::read_to_string(pid_file_path(config_path))
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+      return StatusFrame {
+        status,
+        pid,
+        note: None,
+        config_missing: false,
+        config_error: None,
+      };
     }
-    return Ok(());
+    Err(e) if !is_daemon_unreachable(&e) => {
+      return StatusFrame {
+        status: service::ServiceStatus {
+          state: ServiceState::Stopped,
+          channels: Vec::new(),
+        },
+        pid: None,
+        note: None,
+        config_missing: false,
+        config_error: Some(format!("Failed to query daemon status: {}", e)),
+      };
+    }
+    Err(_) => {}
   }
 
-  // No running process (IPC file missing or connection refused): show Stopped with config totals
   if !config_path.exists() {
+    return StatusFrame {
+      status: service::ServiceStatus {
+        state: ServiceState::Stopped,
+        channels: Vec::new(),
+      },
+      pid: None,
+      note: None,
+      config_missing: true,
+      config_error: None,
+    };
+  }
+
+  match AppConfig::from_file(config_path) {
+    Ok(config) => {
+      // Build a Stopped ServiceStatus from the declared channels so the
+      // renderer can show the topology the user is going to bring up.
+      let channels: Vec<service::ChannelStatus> = config
+        .channels
+        .iter()
+        .map(|c| service::ChannelStatus {
+          name: c.name.clone(),
+          direction: c.direction,
+          local: format!("{}:{}", c.local.host, c.local.port),
+          remote: format!("{}:{}", c.remote.host, c.remote.port),
+          health: service::ChannelHealth::Stopped,
+        })
+        .collect();
+      StatusFrame {
+        status: service::ServiceStatus {
+          state: ServiceState::Stopped,
+          channels,
+        },
+        pid: None,
+        note: Some("Service is not running. Start with: `ssh-channels-hub start -D`".to_string()),
+        config_missing: false,
+        config_error: None,
+      }
+    }
+    Err(e) => StatusFrame {
+      status: service::ServiceStatus {
+        state: ServiceState::Stopped,
+        channels: Vec::new(),
+      },
+      pid: None,
+      note: None,
+      config_missing: false,
+      config_error: Some(e.to_string()),
+    },
+  }
+}
+
+/// Draw one status frame to stdout. Returns `Err` only when the underlying
+/// config is unreadable in a way the user should know about; `Ok` covers
+/// "everything fine" and "service stopped, no daemon".
+fn draw_status_frame(frame: &StatusFrame, config_path: &Path) -> AnyhowResult<()> {
+  if frame.config_missing {
     ui::header("📋", "Service Status");
     ui::fail(format!(
       "Configuration file not found: {}",
@@ -465,32 +633,66 @@ async fn handle_status(config_path: PathBuf) -> AnyhowResult<()> {
     ui::hint("Run `ssh-channels-hub generate` to scaffold a config.toml from ~/.ssh/config.");
     return Ok(());
   }
+  if let Some(err) = &frame.config_error {
+    ui::header("📋", "Service Status");
+    ui::fail(format!("Failed to load configuration: {}", err));
+    return Err(anyhow::anyhow!("Failed to load config: {}", err));
+  }
+  ui::print_service_status(
+    &frame.status,
+    config_path,
+    frame.pid.as_deref(),
+    frame.note.as_deref(),
+  );
+  Ok(())
+}
 
-  match AppConfig::from_file(&config_path) {
-    Ok(config) => {
-      let total = config.channels.len();
-      let status = service::ServiceStatus {
-        state: ServiceState::Stopped,
-        active_channels: 0,
-        total_channels: total,
-      };
-      ui::print_service_status(
-        &status,
-        &config_path,
-        None,
-        Some("Service is not running. Start with: `ssh-channels-hub start -D`"),
-      );
-      println!();
-      ui::channel_list(&config.channels);
-    }
-    Err(e) => {
-      ui::header("📋", "Service Status");
-      ui::fail(format!("Failed to load configuration: {}", e));
-      return Err(anyhow::anyhow!("Failed to load config: {}", e));
-    }
+/// ANSI clear screen + cursor-home. Used at the start of each watch frame so
+/// the new render replaces the previous one in place.
+const ANSI_CLEAR_HOME: &str = "\x1b[2J\x1b[H";
+
+/// Handle status command: one-shot render by default; with `--watch`, re-render
+/// every `interval` seconds until Ctrl+C.
+async fn handle_status(config_path: PathBuf, watch: bool, interval: u64) -> AnyhowResult<()> {
+  if !watch {
+    let frame = render_status_once(&config_path).await;
+    return draw_status_frame(&frame, &config_path);
   }
 
-  Ok(())
+  let interval = interval.max(1);
+  let mut ticker = tokio::time::interval(Duration::from_secs(interval));
+  // If a render takes longer than `interval`, drop the missed ticks rather
+  // than burst-firing — we always want one render per real-time interval.
+  ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+  use std::io::Write;
+  loop {
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            // Leave the user's terminal in a clean state on exit.
+            println!();
+            ui::info("Exited watch mode.");
+            return Ok(());
+        }
+        _ = ticker.tick() => {}
+    }
+
+    let frame = render_status_once(&config_path).await;
+    // Best-effort clear; if the terminal doesn't support ANSI (e.g. legacy
+    // cmd.exe), output appends and the user still sees the latest frame.
+    print!("{}", ANSI_CLEAR_HOME);
+    // In watch mode we swallow config-load errors — the frame's already been
+    // rendered (the error path inside draw_status_frame prints before
+    // returning) and we want to keep polling so the user sees recovery the
+    // moment they fix the file.
+    let _ = draw_status_frame(&frame, &config_path);
+    println!();
+    ui::hint(format!(
+      "↻ Refreshing every {}s. Press Ctrl+C to exit.",
+      interval
+    ));
+    let _ = std::io::stdout().flush();
+  }
 }
 
 /// Handle validate command
@@ -525,6 +727,31 @@ async fn handle_validate(config_path: Option<std::path::PathBuf>) -> AnyhowResul
       return Err(anyhow::anyhow!("Invalid configuration: {}", e));
     }
   };
+
+  // ProxyJump environment checks (IdentityFile on disk, known_hosts entries).
+  // Errors fail validation; warnings are printed but pass.
+  let preflight = config::check_jump_preflight(&channels, None);
+
+  if !preflight.warnings.is_empty() {
+    println!();
+    for w in &preflight.warnings {
+      ui::warn(w);
+    }
+  }
+
+  if !preflight.errors.is_empty() {
+    println!();
+    for e in &preflight.errors {
+      ui::fail(e);
+    }
+    ui::hint(
+      "Fix the listed IdentityFile paths in ~/.ssh/config (or place the key file at the resolved path).",
+    );
+    return Err(anyhow::anyhow!(
+      "ProxyJump preflight failed: {} error(s)",
+      preflight.errors.len()
+    ));
+  }
 
   println!();
   ui::success(format!(
@@ -618,6 +845,67 @@ async fn handle_generate(
   ui::hint("and replace LOCAL_PORT / REMOTE_PORT with concrete ports (or host:port).");
 
   Ok(())
+}
+
+/// Handle hosts command: report whether SSH config aliases are usable here.
+async fn handle_hosts(
+  ssh_config: Option<std::path::PathBuf>,
+  format: HostOutputFormat,
+) -> AnyhowResult<()> {
+  let ssh_config_path = ssh_config.unwrap_or_else(default_ssh_config_path);
+  let entries = parse_ssh_config(&ssh_config_path).context("Failed to parse SSH config file")?;
+  let reports = analyze_hosts(&entries);
+
+  match format {
+    HostOutputFormat::Json => {
+      println!(
+        "{}",
+        serde_json::to_string_pretty(&reports).context("Serialize host report as JSON")?
+      );
+    }
+    HostOutputFormat::Table => {
+      render_hosts_table(&ssh_config_path, &reports);
+    }
+  }
+
+  Ok(())
+}
+
+fn render_hosts_table(ssh_config_path: &Path, reports: &[HostSupportReport]) {
+  ui::header("🖥️", "SSH host support");
+  ui::kv_dim("SSH config", ssh_config_path.display());
+  ui::kv("Hosts", reports.len());
+
+  if reports.is_empty() {
+    println!();
+    ui::warn("No Host blocks found.");
+    ui::hint("Add Host aliases to SSH config, then re-run `ssh-channels-hub hosts`.");
+    return;
+  }
+
+  println!();
+  for report in reports {
+    let target = report.hostname.as_deref().unwrap_or("?");
+    let status = match report.status {
+      HostSupportStatus::Supported => "supported",
+      HostSupportStatus::Unsupported => "unsupported",
+    };
+
+    println!("  [{}] -> {}  {}", report.alias, target, status);
+
+    match report.status {
+      HostSupportStatus::Supported => {
+        for warning in &report.warnings {
+          println!("      warning: {}", warning);
+        }
+      }
+      HostSupportStatus::Unsupported => {
+        for reason in &report.reasons {
+          println!("      reason: {}", reason);
+        }
+      }
+    }
+  }
 }
 
 /// Handle test command - verify channels are working
@@ -714,5 +1002,200 @@ async fn handle_test(config_path: std::path::PathBuf) -> AnyhowResult<()> {
     ui::hint("Re-run with `--debug` to see SSH session logs.");
     ui::hint("Verify the remote service is reachable from the SSH server itself.");
     Err(anyhow::anyhow!("Some channels failed the connection test"))
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::config::Direction;
+  use crate::service::{ChannelHealth, ChannelStatus, ServiceState, ServiceStatus};
+
+  fn ch(name: &str, health: ChannelHealth) -> ChannelStatus {
+    ChannelStatus {
+      name: name.to_string(),
+      direction: Direction::LocalToRemote,
+      local: "127.0.0.1:3306".to_string(),
+      remote: "db.internal:3306".to_string(),
+      health,
+    }
+  }
+
+  fn round_trip(status: ServiceStatus) -> ServiceStatus {
+    let toml = status_to_toml(&status);
+    parse_status_toml(&toml).expect("parse round-trip")
+  }
+
+  #[test]
+  fn status_roundtrips_connected_channel() {
+    let s = ServiceStatus {
+      state: ServiceState::Running,
+      channels: vec![ch("db", ChannelHealth::Connected)],
+    };
+    let r = round_trip(s);
+    assert_eq!(r.state, ServiceState::Running);
+    assert_eq!(r.channels.len(), 1);
+    assert!(matches!(r.channels[0].health, ChannelHealth::Connected));
+    assert_eq!(r.channels[0].name, "db");
+    assert_eq!(r.channels[0].direction, Direction::LocalToRemote);
+  }
+
+  #[test]
+  fn status_roundtrips_reconnecting_with_attempt_and_error() {
+    let s = ServiceStatus {
+      state: ServiceState::Running,
+      channels: vec![ch(
+        "web",
+        ChannelHealth::Reconnecting {
+          attempt: 7,
+          last_error: "connection refused".to_string(),
+        },
+      )],
+    };
+    let r = round_trip(s);
+    match &r.channels[0].health {
+      ChannelHealth::Reconnecting {
+        attempt,
+        last_error,
+      } => {
+        assert_eq!(*attempt, 7);
+        assert_eq!(last_error, "connection refused");
+      }
+      other => panic!("expected Reconnecting, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn status_roundtrips_failed_with_error() {
+    let s = ServiceStatus {
+      state: ServiceState::Error("boom".to_string()),
+      channels: vec![ch(
+        "db",
+        ChannelHealth::Failed {
+          error: "auth failed".to_string(),
+        },
+      )],
+    };
+    let r = round_trip(s);
+    // ServiceState::Error message isn't preserved on the wire — only the kind
+    // is. That's intentional (the wire stays flat), document via assert.
+    assert_eq!(r.state, ServiceState::Error(String::new()));
+    match &r.channels[0].health {
+      ChannelHealth::Failed { error } => assert_eq!(error, "auth failed"),
+      other => panic!("expected Failed, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn status_roundtrips_connecting_with_attempt() {
+    let s = ServiceStatus {
+      state: ServiceState::Starting,
+      channels: vec![ch("db", ChannelHealth::Connecting { attempt: 3 })],
+    };
+    let r = round_trip(s);
+    match &r.channels[0].health {
+      ChannelHealth::Connecting { attempt } => assert_eq!(*attempt, 3),
+      other => panic!("expected Connecting, got {:?}", other),
+    }
+  }
+
+  #[test]
+  fn status_roundtrips_stopped_with_empty_channels() {
+    let s = ServiceStatus {
+      state: ServiceState::Stopped,
+      channels: vec![],
+    };
+    let r = round_trip(s);
+    assert_eq!(r.state, ServiceState::Stopped);
+    assert!(r.channels.is_empty());
+  }
+
+  #[test]
+  fn parse_rejects_unknown_state() {
+    let bogus = r#"state = "Levitating"
+"#;
+    assert!(parse_status_toml(bogus).is_err());
+  }
+
+  #[test]
+  fn parse_rejects_unknown_health() {
+    let bogus = r#"state = "Running"
+[[channels]]
+name = "x"
+direction = "local->remote"
+local = "127.0.0.1:1"
+remote = "127.0.0.1:2"
+health = "Floating"
+"#;
+    assert!(parse_status_toml(bogus).is_err());
+  }
+
+  #[test]
+  fn parse_rejects_unknown_direction() {
+    let bogus = r#"state = "Running"
+[[channels]]
+name = "x"
+direction = "sideways"
+local = "127.0.0.1:1"
+remote = "127.0.0.1:2"
+health = "Connected"
+"#;
+    assert!(parse_status_toml(bogus).is_err());
+  }
+
+  #[tokio::test]
+  async fn render_status_reports_daemon_protocol_errors() {
+    let unique = format!(
+      "ssh-channels-hub-status-test-{}-{}",
+      std::process::id(),
+      std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+    );
+    let dir = std::env::temp_dir().join(unique);
+    std::fs::create_dir_all(&dir).unwrap();
+    let config_path = dir.join("config.toml");
+    std::fs::write(&config_path, "[reconnection]\n").unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    write_port_file(&port_file_path(&config_path), port).unwrap();
+    let server = tokio::spawn(async move {
+      let (mut stream, _) = listener.accept().await.unwrap();
+      let _ = read_line_async(&mut stream).await.unwrap();
+      stream.write_all(b"not valid toml").await.unwrap();
+      stream.shutdown().await.unwrap();
+    });
+
+    let frame = render_status_once(&config_path).await;
+    server.await.unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(
+      frame
+        .config_error
+        .as_deref()
+        .is_some_and(|e| e.contains("Failed to query daemon status")),
+      "expected daemon query error, got {:?}",
+      frame.config_error
+    );
+  }
+
+  #[test]
+  fn parse_back_compat_defaults_attempt_and_error_to_zero_and_empty() {
+    // Minimal channel TOML — attempt/last_error omitted — should still parse
+    // (serde defaults). Ensures the wire stays forgiving across versions.
+    let minimal = r#"state = "Running"
+[[channels]]
+name = "x"
+direction = "local->remote"
+local = "127.0.0.1:1"
+remote = "127.0.0.1:2"
+health = "Connected"
+"#;
+    let r = parse_status_toml(minimal).expect("minimal channel parses");
+    assert_eq!(r.channels.len(), 1);
+    assert!(matches!(r.channels[0].health, ChannelHealth::Connected));
   }
 }

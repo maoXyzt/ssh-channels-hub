@@ -1,4 +1,4 @@
-use crate::config::{AppConfig, ChannelTypeParams};
+use crate::config::{AppConfig, ChannelTypeParams, Direction};
 use crate::error::{AppError, Result};
 use crate::port_check::check_ports;
 use crate::ssh::SshManager;
@@ -15,6 +15,52 @@ pub enum ServiceState {
   Running,
   Stopping,
   Error(String),
+}
+
+/// Per-channel runtime health, written by the SSH manager task and read by
+/// `status` / `--watch`. Distinct from `ServiceState`, which is service-wide.
+///
+/// Transition map (rough):
+///   Stopped → Connecting{1} → Connected → (session drop)
+///           → Reconnecting{n} → Connecting{n+1} → Connected …
+/// When `max_retries > 0` is exhausted the state lands in `Failed`; otherwise
+/// the outer `SshManager::start` loop kicks off a fresh `Connecting{1}` cycle
+/// after a 1 s pause.
+#[derive(Debug, Clone, Default)]
+pub enum ChannelHealth {
+  /// Manager hasn't started its connect loop yet, or has stopped after cancel.
+  #[default]
+  Stopped,
+  /// First connect attempt in this cycle, or after a successful retry transition.
+  /// `attempt` starts at 1 within a cycle.
+  Connecting { attempt: u32 },
+  /// SSH session is up AND the channel-side setup (listener bind / tcpip-forward)
+  /// completed. The reconnect loop is blocked waiting for the session to end.
+  Connected,
+  /// A previous attempt failed; we're inside backon's backoff before retrying.
+  Reconnecting { attempt: u32, last_error: String },
+  /// `max_retries` was non-zero and is now exhausted. The outer loop may still
+  /// restart the cycle (a project quirk — see `SshManager::start`).
+  Failed { error: String },
+}
+
+impl ChannelHealth {
+  /// True when the SSH session is up and the channel is actively serving.
+  /// `status` uses this for the aggregate `connected / total` ratio.
+  pub fn is_connected(&self) -> bool {
+    matches!(self, ChannelHealth::Connected)
+  }
+}
+
+/// One row in `ServiceStatus.channels` — captures everything `status` and
+/// `--watch` need to render a channel without re-reading config.toml.
+#[derive(Debug, Clone)]
+pub struct ChannelStatus {
+  pub name: String,
+  pub direction: Direction,
+  pub local: String,
+  pub remote: String,
+  pub health: ChannelHealth,
 }
 
 /// Service manager that manages all SSH channels
@@ -247,18 +293,14 @@ impl ServiceManager {
   //     self.start().await
   // }
 
-  /// Get service status
+  /// Get service status — walks every running `SshManager` and snapshots its
+  /// live health, so `status` reflects what's actually connected (not just
+  /// what's been spawned).
   pub async fn status(&self) -> ServiceStatus {
     let state = self.state.lock().await.clone();
     let managers = self.managers.lock().await;
-    let channel_count = managers.len();
-    let total_channels = self.config.channels.len();
-
-    ServiceStatus {
-      state,
-      active_channels: channel_count,
-      total_channels,
-    }
+    let channels: Vec<ChannelStatus> = managers.iter().map(|m| m.snapshot()).collect();
+    ServiceStatus { state, channels }
   }
 }
 
@@ -266,8 +308,23 @@ impl ServiceManager {
 #[derive(Debug, Clone)]
 pub struct ServiceStatus {
   pub state: ServiceState,
-  pub active_channels: usize,
-  pub total_channels: usize,
+  pub channels: Vec<ChannelStatus>,
+}
+
+impl ServiceStatus {
+  /// Count of channels currently in `Connected` health.
+  pub fn connected_count(&self) -> usize {
+    self
+      .channels
+      .iter()
+      .filter(|c| c.health.is_connected())
+      .count()
+  }
+
+  /// Total channels known to the service.
+  pub fn total_count(&self) -> usize {
+    self.channels.len()
+  }
 }
 
 impl std::fmt::Display for ServiceStatus {
@@ -275,7 +332,9 @@ impl std::fmt::Display for ServiceStatus {
     write!(
       f,
       "State: {:?}, Channels: {}/{}",
-      self.state, self.active_channels, self.total_channels
+      self.state,
+      self.connected_count(),
+      self.total_count()
     )
   }
 }

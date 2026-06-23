@@ -104,8 +104,19 @@ key 是 SSH config 里的 alias 字符串。**没有覆盖需求的 host 不需�
 | `Port` | 可选,默认 22 |
 | `IdentityFile` | 可选。有则走密钥认证;没有则必须配 `[auth.<alias>].password` |
 | `Host *` | 通配的默认值会被继承到其它 Host |
+| `ProxyJump` | 可选。仅支持「指向 Host 别名」的写法,详见下文「ProxyJump 限制」 |
 
-**不支持**(SSH 客户端有,工具没有):`ProxyJump` / `ProxyCommand` / `ControlMaster` / `Include` / `Match` 等。
+**不支持**(SSH 客户端有,工具没有):`ControlMaster` / `Include` / `Match` 等。
+
+**`ProxyCommand` 兼容(限定形态)**:OpenSSH 7.3 之前没有 `ProxyJump`,常见做法是 `ProxyCommand ssh <alias> -W %h:%p`。本工具仅识别这一种形态(`ssh -W %h:%p <alias>` 同样接受),并把它当作 `ProxyJump <alias>` 处理 —— 所有 ProxyJump 限制(见下)同样适用。其它任何 `ProxyCommand` 写法(比如 `nc`、`-o ...` 额外选项、其它 ssh 子命令)一律报错,提示用户升级 OpenSSH 并改用 `ProxyJump`。当 `ProxyJump` 已显式设置时,`ProxyCommand` 被忽略。
+
+**ProxyJump 限制**:
+
+- 值必须是已经在 `~/.ssh/config` 里定义为 `Host <alias>` 的别名,可以用逗号串成多跳(`ProxyJump alpha,beta`)。原始的 `user@host:port` 形式会被拒绝,提示用户先把跳板写成一个 `Host` 块。
+- 跳板仅支持 **publickey 认证**。密钥按 ssh 命令的惯例查找:跳板别名显式 `IdentityFile` > `Host *` 全局 `IdentityFile` > 默认路径(`~/.ssh/id_ed25519` / `id_ecdsa` / `id_rsa` / `id_dsa`)。默认路径只在刚好找到一个 key 时自动使用;如果找到多个默认 key,工具会要求你在跳板 `Host` 上显式写 `IdentityFile`,避免选错 key。
+- 跳板的 IdentityFile **不能被 passphrase 加密**(守护进程没法交互输入)。如果是加密的 key,请解密或换一把未加密的 key。
+- 跳板会**严格校验** `~/.ssh/known_hosts`:未记录的跳板主机会被拒绝(不做 TOFU 自动追加)。第一次使用前先 `ssh-keyscan` 写入,或手动 `ssh <alias>` 一次让 OpenSSH 帮你写。
+- 跳板别名自己的 `ProxyJump` 设置**不会递归生效**:本工具只读取 channel 目标 host 自身的 `ProxyJump` 链,不再深入。如果你的跳板别名也写了 `ProxyJump`,本工具会忽略,直接把它当成最终一跳。如有真的多级跳板需求,请在目标 host 的 `ProxyJump` 里把所有跳板按顺序逗号列出。
 
 ### 3.5 `[reconnection]`
 
@@ -228,13 +239,65 @@ remote    = "80"
 
 三个 channel 共用同一 SSH 连接的 host info(底层每个 channel 仍各自建一条 SSH session,详见 [architecture.md](./architecture.md))。
 
-### 4.7 用 `generate` 生成脚手架
+### 4.7 通过 ProxyJump 访问内网 host
+
+`~/.ssh/config`:
+```text
+Host bastion
+  HostName bastion.example.com
+  User opsadmin
+  IdentityFile ~/.ssh/id_ed25519
+
+Host inner-db
+  HostName 10.0.5.20
+  User dbuser
+  IdentityFile ~/.ssh/id_ed25519
+  ProxyJump bastion
+```
+
+`config.toml`:
+```toml
+[[channels]]
+name      = "inner-db-tunnel"
+hostname  = "inner-db"
+direction = "local->remote"
+local     = "3306"
+remote    = "3306"
+```
+
+效果:本机 `127.0.0.1:3306` ⇄ `bastion` ⇄ `10.0.5.20:3306`。多跳就把 `ProxyJump` 写成逗号列表(`ProxyJump dmz-jump,inner-jump`),按从外到内的顺序。
+
+第一次跑之前确认跳板已在 `~/.ssh/known_hosts` 里:
+
+```bash
+ssh-keyscan -p 22 bastion.example.com >> ~/.ssh/known_hosts
+# 或者
+ssh bastion   # 让 OpenSSH 提示你是否信任并写入
+```
+
+### 4.8 用 `generate` 生成脚手架
 
 ```bash
 ssh-channels-hub generate -o config.toml
 ```
 
 工具扫一遍 `~/.ssh/config`,为每个 alias 输出**注释掉的** `[[channels]]` 模板。取消注释、填上 `local` / `remote` 端口即可。无 `IdentityFile` 的 host 同时会附上 `[auth.<alias>]` 模板。
+
+### 4.9 检查 SSH host 支持状态
+
+```bash
+ssh-channels-hub hosts
+ssh-channels-hub hosts --ssh-config /path/to/ssh_config
+ssh-channels-hub hosts --format json
+```
+
+`hosts` 会列出 SSH config 里的每个 `Host <alias>` 以及本工具是否能使用它。默认读取 `~/.ssh/config`,默认输出面向人工查看的 table;`--format json` 输出稳定 JSON 数组,字段为 `alias`、`hostname`、`status`、`reasons`、`warnings`。
+
+判定规则:
+
+- `supported`:该 alias 有 `HostName` 和 `User`,目标 host 有 `IdentityFile` 或可在实际 channel 配置中补 `[auth.<alias>].password`,且 `ProxyJump` 链符合本工具限制。
+- `unsupported`:缺 `HostName`、缺 `User`、`ProxyJump` 写成 `user@host:port` raw target、`ProxyJump` alias 不存在、跳板 alias 缺必要字段或无可用 key。
+- 普通目标 host 无 `IdentityFile` 不直接判失败,但会给 warning:实际使用这个 host 的 channel 需要在 `config.toml` 中配置 `[auth.<alias>].password`。
 
 ## 5. 配置验证
 
@@ -250,6 +313,10 @@ ssh-channels-hub validate --config /path/to/config.toml
 - 该 alias 有 `IdentityFile` 或 `[auth.<alias>].password` 二选一
 - `direction` 取值合法
 - `local` / `remote` 是合法的 `port` 或 `host:port`
+- 如果 channel 走 `ProxyJump`:每一跳的别名都已定义、有 `User` 和 `HostName`、有可用的 publickey(显式 `IdentityFile`、`Host *` 全局,或唯一一个 `~/.ssh/id_*` 默认 key)
+- 如果有 `ProxyJump`,还会做两项环境前置检查:
+  - **失败**:跳板的 `IdentityFile` 文件确实不存在(键路径已解析但落不到磁盘)
+  - **警告**:跳板主机在 `~/.ssh/known_hosts` 中没有对应记录(运行时会被严格校验拒绝)
 
 输出会列出每个 channel 解析后的 `user@host:port` + 转发参数。
 
@@ -266,6 +333,34 @@ alias 的 `Host` 块里缺 `HostName` 或 `User`。补上即可。`User` 可以�
 ### `Host 'X' has no IdentityFile in SSH config and no [auth.X].password in config.toml`
 
 二选一:在 `~/.ssh/config` 给该 host 加 `IdentityFile`,或在 `config.toml` 加 `[auth.X] password = "..."`。
+
+### `Channel host 'X' has 'ProxyCommand ...' which this tool does not understand`
+
+`ProxyCommand` 仅兼容 `ssh <alias> -W %h:%p` 这一种写法(以及参数顺序换一下的 `ssh -W %h:%p <alias>`)。如果你的写法带其它选项(`-q`、`-o ...`)、用其它工具(`nc`、`socat`)或别的 ssh 子命令,本工具不会去解析。最干净的做法是升级到 OpenSSH 7.3+ 并改用 `ProxyJump <alias>`;不能升级的话,把 `ProxyCommand` 改写成上面那一种形态。
+
+### `Channel host 'X' has ProxyJump 'user@host:port' written as a raw target`
+
+ProxyJump 写成了 `user@host:port` 的字面形式。在 `~/.ssh/config` 里为它建一个 `Host <alias>` 块(填好 `HostName / User / Port / IdentityFile`),然后把 ProxyJump 的值换成那个 alias。
+
+### `ProxyJump alias 'X' ... has no IdentityFile and no default key ... exists`
+
+跳板别名没有显式 `IdentityFile`,`Host *` 也没设默认,而 `~/.ssh/` 下没有 `id_ed25519 / id_ecdsa / id_rsa / id_dsa` 任何一个常见 key。给该跳板加 `IdentityFile`,或者把你常用的 key 改成上述任一标准文件名。
+
+### `ProxyJump alias 'X' ... multiple default keys exist`
+
+跳板别名没有显式 `IdentityFile`,但 `~/.ssh/` 下存在多个默认 key。工具不会猜哪一把 key 应该用于跳板;在跳板的 `Host X` 块里补上明确的 `IdentityFile`。
+
+### `ProxyJump alias 'X' uses encrypted IdentityFile`
+
+跳板用的 key 被 passphrase 保护,守护进程没法交互输入。要么解密保存(`ssh-keygen -p -f ~/.ssh/id_xxx` 把 passphrase 设为空),要么把 `IdentityFile` 指向一把未加密的 key。终点 host 不受此限,可以用 `[auth.<alias>].passphrase` 提供。
+
+### `ProxyJump host not in known_hosts; refusing`
+
+启动日志里出现这条,说明某个跳板的主机公钥不在 `~/.ssh/known_hosts`。本工具走严格校验,不做 TOFU 自动追加。先手动 `ssh-keyscan -p <port> <host> >> ~/.ssh/known_hosts`,或对跳板 `ssh <alias>` 一次让 OpenSSH 帮你写入。
+
+### `ProxyJump host key changed since last contact`
+
+跳板主机的公钥与 `~/.ssh/known_hosts` 里记录的不一致 —— 可能是 MITM,也可能是跳板真的重装过。**先核实**(找运维确认指纹),确认无误后把 `~/.ssh/known_hosts` 里的旧记录删掉(报错日志会带 line 行号),让它重新被信任。
 
 ### `invalid direction '...', expected "local->remote" or "remote->local"`
 

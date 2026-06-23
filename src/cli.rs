@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 /// SSH Channels Hub — manage SSH port-forwarding tunnels with auto-reconnect.
@@ -61,11 +61,22 @@ IPC socket recorded next to config.toml.")]
 
   /// Show whether the service is running, plus configured channels.
   #[command(long_about = "\
-Connects to the running daemon over IPC to report live state.
+Connects to the running daemon over IPC to report live state, with
+per-channel health (Connected / Reconnecting / Failed / Stopped).
 
 When no daemon is running, falls back to printing the channels
-declared in config.toml so you can still see the intended setup.")]
-  Status,
+declared in config.toml so you can still see the intended setup.
+
+With --watch, re-renders periodically until interrupted (Ctrl+C);
+useful for monitoring a fragile link.")]
+  Status {
+    /// Re-render every <interval> seconds until Ctrl+C.
+    #[arg(short = 'w', long)]
+    watch: bool,
+    /// Watch refresh interval in seconds (minimum 1, only used with --watch).
+    #[arg(short = 'n', long, default_value_t = 2, value_name = "SECONDS")]
+    interval: u64,
+  },
 
   /// Validate config.toml — resolves each channel against ~/.ssh/config.
   #[command(long_about = "\
@@ -93,6 +104,22 @@ blocks for hosts that have no IdentityFile.")]
     output: Option<PathBuf>,
   },
 
+  /// List SSH config Host aliases and whether this tool can use them.
+  #[command(long_about = "\
+Scans SSH config and reports each `Host <alias>` block as supported or
+unsupported for ssh-channels-hub. Use this before writing channels to find
+missing HostName/User fields, unsupported ProxyJump forms, and hosts that
+will need a password in config.toml.")]
+  Hosts {
+    /// SSH config to read (default: ~/.ssh/config).
+    #[arg(short, long, value_name = "FILE")]
+    ssh_config: Option<PathBuf>,
+
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = HostOutputFormat::Table)]
+    format: HostOutputFormat,
+  },
+
   /// Probe each local→remote channel by connecting to its local port.
   #[command(long_about = "\
 For every `local->remote` channel, try a TCP connect to the local
@@ -104,4 +131,10 @@ server side.")]
     #[arg(short, long, value_name = "FILE")]
     config: Option<PathBuf>,
   },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum HostOutputFormat {
+  Table,
+  Json,
 }

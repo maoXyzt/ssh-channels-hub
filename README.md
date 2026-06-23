@@ -12,6 +12,7 @@ Reach for this when `ssh -L 3306:127.0.0.1:3306 db.example.com` has grown into *
 
 - **Declarative**: tunnels live in `config.toml`, not in shell history or terminal panes.
 - **No host config duplication**: host info (`HostName` / `User` / `Port` / `IdentityFile`) is read straight from `~/.ssh/config` — you reference aliases.
+- **ProxyJump aware**: chain through bastions defined in `~/.ssh/config` — alias-only references, publickey auth, strict `known_hosts` check. See [docs/configuration.md §3.4](docs/configuration.md#34-host-info-从哪里来).
 - **Auto-reconnect**: configurable backoff per tunnel; one drop doesn't take the others down.
 - **Both directions in one schema**: local-to-remote (`ssh -L`) and remote-to-local (`ssh -R`).
 - **Foreground or daemon**: `start` attaches to the terminal, `start -D` detaches; `stop` / `restart` / `status` talk to the running process via IPC.
@@ -157,10 +158,11 @@ Full field reference: [docs/configuration.md](docs/configuration.md).
 | `start -D` / `--daemon` | Spawn a detached background process. |
 | `stop` | Tell the running process to exit gracefully (via IPC). |
 | `restart` | Stop the running service, then re-start as daemon. |
-| `status` | Show state, active vs total channels, PID, and the channel list. |
+| `status` | Show service state, per-channel health (Connected / Reconnecting / Failed / Stopped), PID, and endpoints. Add `--watch / -w` to refresh every `--interval / -n` seconds (default 2). |
 | `test` | Probe each configured `local->remote` listener to confirm the tunnel is alive. `remote->local` channels are skipped — verify those server-side. |
 | `validate` | Resolve every channel against `~/.ssh/config` and report any problems. |
 | `generate -o config.toml` | Scaffold a `config.toml` from existing SSH config aliases. |
+| `hosts` | Scan SSH config aliases and show whether each host is supported. Use `--format json` for script-friendly output. |
 
 All commands accept `--config /path/to/config.toml` to point at a non-default file, and `--debug` for verbose logging.
 
