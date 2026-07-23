@@ -178,7 +178,7 @@ pub struct ChannelConfig {
 /// One hop in a ProxyJump chain. Built only from data the tool can read
 /// non-interactively: a `Host <alias>` block in `~/.ssh/config` providing
 /// HostName/User/Port and an unencrypted IdentityFile for publickey auth.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JumpHopConfig {
   /// SSH config alias the hop was resolved from (for error messages).
   pub alias: String,
@@ -208,7 +208,7 @@ pub enum ChannelTypeParams {
 }
 
 /// Authentication configuration (runtime — used by SSH layer)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AuthConfig {
   /// Password authentication

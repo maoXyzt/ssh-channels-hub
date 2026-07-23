@@ -12,8 +12,8 @@
 
 - **声明式**:隧道写在 `config.toml`,不再散落在 shell 历史或终端窗口里。
 - **不重复配置 host 信息**:`HostName` / `User` / `Port` / `IdentityFile` 直接从 `~/.ssh/config` 读,这里只引用 alias。
-- **支持 ProxyJump**:走 `~/.ssh/config` 里定义好的跳板别名(只接受别名形式,publickey 认证,严格校验 `known_hosts`)。详见 [docs/configuration.md §3.4](docs/configuration.md#34-host-info-从哪里来)。
-- **自动重连**:每条隧道独立指数退避;一条断了不会拖死其它。
+- **支持 ProxyJump**:走 `~/.ssh/config` 里定义好的跳板别名(只接受别名形式,publickey 认证,目标和跳板都严格校验 `known_hosts`)。详见 [docs/configuration.md §3.4](docs/configuration.md#34-host-info-从哪里来)。
+- **自动重连**:兼容隧道共用 SSH session;某条 SSH 路由断开时用 jitter 退避重连,不影响其它路由。
 - **两个方向同一套 schema**:`local->remote`(`ssh -L`)和 `remote->local`(`ssh -R`)。
 - **前台或 daemon**:`start` 挂在终端,`start -D` 后台运行;`stop` / `restart` / `status` 走 IPC 跟运行中的进程通信。
 
@@ -121,6 +121,8 @@ initial_delay_secs      = 1
 max_delay_secs          = 30
 use_exponential_backoff = true
 ```
+
+每次重试都会加入 jitter。有限重试轮次耗尽后仍会自动恢复,但改用最高 60 秒的第二层指数退避;session 成功建立后两层计数都会重置。进程内 SSH 握手串行执行,避免重连风暴。
 
 ### 更多示例
 

@@ -223,7 +223,7 @@ remote    = "3306"
 
 效果:本机 `127.0.0.1:3306` ⇄ `bastion` ⇄ `10.0.5.20:3306`。
 
-**前置准备**(本工具对跳板走严格 `known_hosts` 校验,不做 TOFU 自动追加):
+**前置准备**(本工具对目标主机和跳板都走严格 `known_hosts` 校验,不做 TOFU 自动追加):
 
 ```bash
 ssh-keyscan -p 22 bastion.example.com >> ~/.ssh/known_hosts
@@ -278,8 +278,9 @@ max_delay_secs = 30
 use_exponential_backoff = true
 ```
 
-- 所有 channels 在 `start` 时一起建立,各自独立重连
-- 每个 channel 独立建一条 SSH session(即便复用同一 alias)
+- 所有 channels 在 `start` 时按 SSH 路由分组
+- 目标、用户、认证和 ProxyJump 链一致的 channels 共用一条 SSH session,同组一起重连
+- 不同 SSH 路由独立运行;握手全局串行,避免重连风暴
 - `status` 可查看每条 channel 的实时健康度(下一节)
 
 ---
@@ -293,7 +294,7 @@ use_exponential_backoff = true
 | `Connected` | SSH 会话已认证、本地 listener 已 bind / `tcpip-forward` 已注册 —— 真正在转发流量 |
 | `Connecting #n` | 第 n 次连接尝试还在进行(认证、建链) |
 | `Reconnecting #n` | 上一次断了,正在 backoff 窗口里等待第 n 次重试;后面会附最近一次失败原因 |
-| `Failed` | 配置的 `max_retries` 用完(只有显式设非 0 才会出现),外层循环 1 秒后会重置成 `Connecting #1` |
+| `Failed` | 认证、Host Key 或 channel 配置等永久错误;不会自动重试 |
 | `Stopped` | 没启动或已停止 |
 
 ### 5.1 一次性查看

@@ -1,4 +1,4 @@
-use crate::config::{AppConfig, ChannelTypeParams, Direction};
+use crate::config::{AppConfig, ChannelConfig, ChannelTypeParams, Direction};
 use crate::error::{AppError, Result};
 use crate::port_check::check_ports;
 use crate::ssh::SshManager;
@@ -23,9 +23,8 @@ pub enum ServiceState {
 /// Transition map (rough):
 ///   Stopped → Connecting{1} → Connected → (session drop)
 ///           → Reconnecting{n} → Connecting{n+1} → Connected …
-/// When `max_retries > 0` is exhausted the state lands in `Failed`; otherwise
-/// the outer `SshManager::start` loop kicks off a fresh `Connecting{1}` cycle
-/// after a 1 s pause.
+/// When a finite retry cycle is exhausted, the manager starts another cycle
+/// after a jittered exponential delay capped at 60 seconds.
 #[derive(Debug, Clone, Default)]
 pub enum ChannelHealth {
   /// Manager hasn't started its connect loop yet, or has stopped after cancel.
@@ -39,8 +38,7 @@ pub enum ChannelHealth {
   Connected,
   /// A previous attempt failed; we're inside backon's backoff before retrying.
   Reconnecting { attempt: u32, last_error: String },
-  /// `max_retries` was non-zero and is now exhausted. The outer loop may still
-  /// restart the cycle (a project quirk — see `SshManager::start`).
+  /// A permanent configuration, host-key, authentication, or channel error.
   Failed { error: String },
 }
 
@@ -68,6 +66,49 @@ pub struct ServiceManager {
   config: AppConfig,
   state: Arc<Mutex<ServiceState>>,
   managers: Arc<Mutex<Vec<SshManager>>>,
+}
+
+fn same_ssh_route(left: &ChannelConfig, right: &ChannelConfig) -> bool {
+  left.host == right.host
+    && left.port == right.port
+    && left.username == right.username
+    && left.auth == right.auth
+    && left.proxy_jumps == right.proxy_jumps
+}
+
+fn remote_bind_port(config: &ChannelConfig) -> Option<u16> {
+  match config.params {
+    ChannelTypeParams::ForwardedTcpIp {
+      remote_bind_port, ..
+    } if remote_bind_port != 0 => Some(remote_bind_port),
+    _ => None,
+  }
+}
+
+fn can_share_session(group: &[ChannelConfig], candidate: &ChannelConfig) -> bool {
+  same_ssh_route(&group[0], candidate)
+    && remote_bind_port(candidate).is_none_or(|port| {
+      group
+        .iter()
+        .all(|existing| remote_bind_port(existing) != Some(port))
+    })
+}
+
+fn group_channels(channels: Vec<ChannelConfig>) -> Vec<Vec<ChannelConfig>> {
+  let mut groups: Vec<Vec<ChannelConfig>> = Vec::new();
+
+  // ponytail: O(n²) startup grouping; use a hash key if channel counts become large.
+  for channel in channels {
+    match groups
+      .iter_mut()
+      .find(|group| can_share_session(group, &channel))
+    {
+      Some(group) => group.push(channel),
+      None => groups.push(vec![channel]),
+    }
+  }
+
+  groups
 }
 
 impl ServiceManager {
@@ -145,59 +186,63 @@ impl ServiceManager {
 
     info!("Found {} channel(s) to start", channels.len());
 
-    for channel_config in channels {
-      let mut manager = SshManager::new(channel_config.clone(), self.config.reconnection.clone());
+    for channel_group in group_channels(channels) {
+      let mut manager = SshManager::new(channel_group.clone(), self.config.reconnection.clone());
 
       match manager.start().await {
         Ok(_) => {
-          match &channel_config.params {
-            ChannelTypeParams::ForwardedTcpIp {
-              remote_bind_host,
-              remote_bind_port,
-              local_connect_host,
-              local_connect_port,
-            } => {
-              let remote = format!("{}:{}", remote_bind_host, remote_bind_port);
-              let local_dest = format!("{}:{}", local_connect_host, local_connect_port);
-              ui::success(format!(
-                "{}  remote {} ← local {}  via {}@{}",
-                channel_config.name,
-                remote,
-                local_dest,
-                channel_config.username,
-                channel_config.host
-              ));
-            }
-            ChannelTypeParams::DirectTcpIp {
-              listen_host,
-              local_port,
-              dest_host,
-              dest_port,
-            } => {
-              ui::success(format!(
-                "{}  local {}:{} → remote {}:{}  via {}@{}",
-                channel_config.name,
+          for channel_config in &channel_group {
+            match &channel_config.params {
+              ChannelTypeParams::ForwardedTcpIp {
+                remote_bind_host,
+                remote_bind_port,
+                local_connect_host,
+                local_connect_port,
+              } => {
+                let remote = format!("{}:{}", remote_bind_host, remote_bind_port);
+                let local_dest = format!("{}:{}", local_connect_host, local_connect_port);
+                ui::success(format!(
+                  "{}  remote {} ← local {}  via {}@{}",
+                  channel_config.name,
+                  remote,
+                  local_dest,
+                  channel_config.username,
+                  channel_config.host
+                ));
+              }
+              ChannelTypeParams::DirectTcpIp {
                 listen_host,
                 local_port,
                 dest_host,
                 dest_port,
-                channel_config.username,
-                channel_config.host
-              ));
+              } => {
+                ui::success(format!(
+                  "{}  local {}:{} → remote {}:{}  via {}@{}",
+                  channel_config.name,
+                  listen_host,
+                  local_port,
+                  dest_host,
+                  dest_port,
+                  channel_config.username,
+                  channel_config.host
+                ));
+              }
             }
-          }
 
-          info!(channel = %channel_config.name, "Started SSH manager");
+            info!(channel = %channel_config.name, "Started SSH manager");
+          }
           managers.push(manager);
         }
         Err(e) => {
-          ui::fail(format!("{} — {}", channel_config.name, e));
-          error!(
-              channel = %channel_config.name,
-              error = ?e,
-              "Failed to start SSH manager"
-          );
-          errors.push(format!("{}: {}", channel_config.name, e));
+          for channel_config in &channel_group {
+            ui::fail(format!("{} — {}", channel_config.name, e));
+            error!(
+                channel = %channel_config.name,
+                error = ?e,
+                "Failed to start SSH manager"
+            );
+            errors.push(format!("{}: {}", channel_config.name, e));
+          }
         }
       }
     }
@@ -206,7 +251,10 @@ impl ServiceManager {
     let mut managers_guard = self.managers.lock().await;
     *managers_guard = managers;
 
-    let active = managers_guard.len();
+    let active = managers_guard
+      .iter()
+      .map(SshManager::channel_count)
+      .sum::<usize>();
     let total = active + errors.len();
 
     if errors.is_empty() {
@@ -299,7 +347,7 @@ impl ServiceManager {
   pub async fn status(&self) -> ServiceStatus {
     let state = self.state.lock().await.clone();
     let managers = self.managers.lock().await;
-    let channels: Vec<ChannelStatus> = managers.iter().map(|m| m.snapshot()).collect();
+    let channels: Vec<ChannelStatus> = managers.iter().flat_map(SshManager::snapshots).collect();
     ServiceStatus { state, channels }
   }
 }
@@ -336,5 +384,61 @@ impl std::fmt::Display for ServiceStatus {
       self.connected_count(),
       self.total_count()
     )
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::config::AuthConfig;
+  use std::path::PathBuf;
+
+  fn channel(name: &str, host: &str, key: &str, local_port: u16) -> ChannelConfig {
+    ChannelConfig {
+      name: name.into(),
+      host: host.into(),
+      port: 22,
+      username: "alice".into(),
+      auth: AuthConfig::Key {
+        key_path: PathBuf::from(key),
+        passphrase: None,
+      },
+      params: ChannelTypeParams::DirectTcpIp {
+        listen_host: "127.0.0.1".into(),
+        local_port,
+        dest_host: "db.internal".into(),
+        dest_port: 5432,
+      },
+      proxy_jumps: Vec::new(),
+    }
+  }
+
+  #[test]
+  fn groups_only_channels_with_the_same_ssh_route() {
+    let mut duplicate_remote_port = channel("duplicate-remote", "server", "/key-a", 28080);
+    duplicate_remote_port.params = ChannelTypeParams::ForwardedTcpIp {
+      remote_bind_host: "0.0.0.0".into(),
+      remote_bind_port: 8080,
+      local_connect_host: "127.0.0.1".into(),
+      local_connect_port: 8080,
+    };
+    let mut first_remote = duplicate_remote_port.clone();
+    first_remote.name = "first-remote".into();
+
+    let groups = group_channels(vec![
+      channel("db", "server", "/key-a", 15432),
+      channel("web", "server", "/key-a", 18080),
+      first_remote,
+      duplicate_remote_port,
+      channel("other-auth", "server", "/key-b", 25432),
+      channel("other-host", "backup", "/key-a", 35432),
+    ]);
+
+    assert_eq!(groups.len(), 4);
+    assert_eq!(groups[0].len(), 3);
+    assert_eq!(groups[0][0].name, "db");
+    assert_eq!(groups[0][1].name, "web");
+    assert_eq!(groups[0][2].name, "first-remote");
+    assert_eq!(groups[1][0].name, "duplicate-remote");
   }
 }

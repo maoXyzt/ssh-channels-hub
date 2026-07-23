@@ -121,7 +121,7 @@
    ↓
 3. 启动独立任务
    ↓
-4. 调用 connect_and_manage_channel()
+4. 调用 connect_and_manage_channels()
    ├── 构建重试策略
    └── 使用 backon 重试连接
    ↓
@@ -133,26 +133,23 @@
    ├── 认证
    │   ├── 密码认证
    │   └── 密钥认证
-   └── 打开 channel
-       ├── Session channel
-       └── Direct-TCPIP channel
+   └── 在共享 session 上注册组内 channels
+       ├── Direct-TCPIP 本地监听
+       └── Forwarded-TCPIP 远端监听
 ```
 
 ### 2.2 channel 管理流程
 
-#### Session channel
+#### Forwarded-TCPIP channel
 
 ```
-1. channel_open_session()
+1. 调用 tcpip_forward() 注册远端监听
    ↓
-2. 检查是否有命令参数
-   ├── 有命令: exec(command)
-   └── 无命令: request_pty() + shell()
+2. 按实际远端端口记录本地目标
    ↓
-3. 启动 channel 数据处理任务
-   ├── 监听 channel 消息
-   ├── 处理数据
-   └── 检测 channel 关闭
+3. 收到 forwarded-tcpip 回调时连接本地目标
+   ↓
+4. 使用 copy_bidirectional 双向转发
 ```
 
 #### Direct-TCPIP channel
@@ -192,6 +189,7 @@
    │   └── delay = min(initial * 2^attempt, max_delay)
    └── 固定间隔策略
        └── delay = initial_delay
+   └── 每次延迟加入 jitter
    ↓
 2. 检查重试限制
    ├── 如果 max_retries > 0
@@ -205,6 +203,9 @@
    ↓
 5. 重新建立连接
    └── 回到连接建立流程
+   ↓
+6. 有限轮次耗尽时,进入最高 60 秒的 jitter 指数退避后开始新一轮
+   └── session 成功建立后重置连续失败次数和外层退避
 ```
 
 ### 3.3 重连策略示例
@@ -274,10 +275,9 @@
 
 ```
 主任务
-  ├── channel 1 任务 ──┐
-  ├── channel 2 任务 ──┤
-  ├── channel 3 任务 ──┼──> 独立运行，互不阻塞
-  └── channel N 任务 ──┘
+  ├── SSH 路由组 1 ──> 共享 session + 多个 channel 任务
+  ├── SSH 路由组 2 ──> 共享 session + 多个 channel 任务
+  └── SSH 路由组 N ──> 共享 session + 多个 channel 任务
 ```
 
 ### 5.2 channel 内部并发
@@ -292,7 +292,7 @@ SshManager 任务
 
 ### 5.3 同步点
 
-- **启动**: 所有 channels 并行启动，不等待其他 channels
+- **启动**: 各路由组并行管理,SSH 握手通过全局单 permit 串行执行
 - **停止**: 等待所有 channels 完成关闭
 - **状态查询**: 需要锁定状态进行读取
 
@@ -305,14 +305,13 @@ SshManager 任务
   └── 立即失败，不启动服务
 
 连接错误
-  ├── 临时性错误 → 重试
-  └── 永久性错误 → 记录错误，跳过该 channel
+  └── 临时性错误 → jitter 退避后重试
 
-认证错误
-  └── 记录错误，跳过该 channel（不重试）
+认证/Host Key 错误
+  └── 记录错误，停止该路由组自动重试
 
 channel 错误
-  └── 重试（重新打开 channel）
+  └── 标记该 channel 失败,组内其他 channel 继续
 ```
 
 ### 6.2 错误传播
@@ -383,6 +382,7 @@ info!(
 ```
 智能重试
   ├── 指数退避避免资源浪费
-  ├── 限制最大重试次数
-  └── 可配置的重试策略
+  ├── jitter 避免同步重连
+  ├── 轮次耗尽后最高 60 秒继续恢复
+  └── SSH 握手单并发
 ```

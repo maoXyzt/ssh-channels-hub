@@ -249,18 +249,17 @@ pub struct ServiceStatus {
 
 ```rust
 pub struct SshManager {
-    config: ChannelConfig,
+    configs: Vec<ChannelConfig>,
     reconnection_config: ReconnectionConfig,
     shutdown_tx: Option<mpsc::Sender<()>>,
     cancellation_token: Option<CancellationToken>,
-    // 实时健康度,与 spawn 出去的 connect 任务共享。
+    // 每个 channel 的实时健康度,与连接组任务共享。
     // 使用 std::sync::Mutex(不跨 await),写者:spawn 任务的状态转移
-    // 与 backon 的 .notify 钩子;读者:SshManager::snapshot()。
-    health: Arc<std::sync::Mutex<ChannelHealth>>,
+    // 与 backon 的 .notify 钩子;读者:SshManager::snapshots()。
+    health: Vec<Arc<std::sync::Mutex<ChannelHealth>>>,
 }
 
-struct ClientHandler;              // 终点 SSH 会话
-struct ReverseForwardHandler { … } // ssh -R 服务端推回的 forwarded-tcpip
+struct ClientHandler { … }         // 共享终点会话 + ssh -R 回调路由
 struct JumpClientHandler { … }     // ProxyJump 跳板专用,严格校验 known_hosts
 ```
 
@@ -272,19 +271,19 @@ struct JumpClientHandler { … }     // ProxyJump 跳板专用,严格校验 know
    - `load_secret_key()` / `load_jump_key()`: 加载私钥(后者强制拒绝 passphrase 加密的 key)
 
 2. **重连逻辑**:
-   - `connect_and_manage_channel()`: 用 `backon` 做指数退避重试,`.notify` 钩子把状态切到 `Reconnecting{ attempt, last_error }`,外层循环负责 max_retries 用完后的 1 秒重置
+   - `connect_and_manage_channels()`: 普通重试使用带 jitter 的 `backon` 退避;有限轮次耗尽后,外层用最高 60 秒的 jitter 指数退避继续恢复
 
 3. **生命周期管理**:
    - `start()`: spawn 出连接任务,初始化 `health = Connecting{1}`
    - `stop()`: shutdown + cancel,把 `health` 置 `Stopped`
-   - `snapshot()`: 同步返回当前 channel 的 `ChannelStatus`(名字 / 方向 / 端点 / 健康度),供 `ServiceManager::status` 调用
+   - `snapshots()`: 同步返回组内每个 channel 的 `ChannelStatus`,供 `ServiceManager::status` 调用
 
 4. **状态写入点**(谁把 ChannelHealth 设成谁):
    - 循环入口 → `Connecting{1}`
    - backon `.notify` 钩子 → `Reconnecting{n, err}`
    - `run_direct_tcpip_listener` 在 `TcpListener::bind` 成功后 → `Connected`
-   - `drive_forwarded_tcpip` 在 `tcpip_forward` 返回 Ok 后 → `Connected`
-   - 单次 retry cycle 用尽 → `Failed{err}`(外层 1s 后重置为 `Connecting{1}`)
+   - `register_forwarded_tcpip` 在 `tcpip_forward` 返回 Ok 后 → `Connected`
+   - 永久认证 / Host Key / channel 错误 → `Failed{err}`(不自动重试)
    - shutdown / cancel → `Stopped`
 
 **设计特点**:
@@ -300,6 +299,8 @@ struct JumpClientHandler { … }     // ProxyJump 跳板专用,严格校验 know
 - 固定间隔（可选）
 - 可配置最大重试次数
 - 可配置延迟范围
+- 普通与轮次耗尽退避均带 jitter
+- SSH 握手全局单并发
 
 ## 3. 模块间依赖关系
 
