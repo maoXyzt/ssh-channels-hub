@@ -190,6 +190,12 @@ enum SshError {
 [optional footer(s)]
 ```
 
+### Pull Request Workflow
+
+- Create pull requests as ready for review; skip draft pull requests.
+- After addressing pull request review feedback, automatically reply to each review thread with the resolution and post one summary comment on the pull request.
+- After a pull request is merged, automatically switch back to `main`, run `git pull --prune`, and delete the local development branch.
+
 ## Quick Reference
 
 ### Common Patterns
