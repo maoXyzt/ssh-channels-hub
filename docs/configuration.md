@@ -115,17 +115,19 @@ key 是 SSH config 里的 alias 字符串。**没有覆盖需求的 host 不需�
 - 值必须是已经在 `~/.ssh/config` 里定义为 `Host <alias>` 的别名,可以用逗号串成多跳(`ProxyJump alpha,beta`)。原始的 `user@host:port` 形式会被拒绝,提示用户先把跳板写成一个 `Host` 块。
 - 跳板仅支持 **publickey 认证**。密钥按 ssh 命令的惯例查找:跳板别名显式 `IdentityFile` > `Host *` 全局 `IdentityFile` > 默认路径(`~/.ssh/id_ed25519` / `id_ecdsa` / `id_rsa` / `id_dsa`)。默认路径只在刚好找到一个 key 时自动使用;如果找到多个默认 key,工具会要求你在跳板 `Host` 上显式写 `IdentityFile`,避免选错 key。
 - 跳板的 IdentityFile **不能被 passphrase 加密**(守护进程没法交互输入)。如果是加密的 key,请解密或换一把未加密的 key。
-- 跳板会**严格校验** `~/.ssh/known_hosts`:未记录的跳板主机会被拒绝(不做 TOFU 自动追加)。第一次使用前先 `ssh-keyscan` 写入,或手动 `ssh <alias>` 一次让 OpenSSH 帮你写。
+- 目标主机和跳板都会**严格校验** `~/.ssh/known_hosts`:未记录的主机会被拒绝(不做 TOFU 自动追加)。第一次使用前先 `ssh-keyscan` 写入,或手动 `ssh <alias>` 一次让 OpenSSH 帮你写。
 - 跳板别名自己的 `ProxyJump` 设置**不会递归生效**:本工具只读取 channel 目标 host 自身的 `ProxyJump` 链,不再深入。如果你的跳板别名也写了 `ProxyJump`,本工具会忽略,直接把它当成最终一跳。如有真的多级跳板需求,请在目标 host 的 `ProxyJump` 里把所有跳板按顺序逗号列出。
 
 ### 3.5 `[reconnection]`
 
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `max_retries` | u32 | 0 | 最大重试次数,0 = 无限 |
+| `max_retries` | u32 | 0 | 每轮最大重试次数,0 = 单轮无限 |
 | `initial_delay_secs` | u64 | 1 | 第一次重试前的延迟 |
 | `max_delay_secs` | u64 | 30 | 重试之间的最大延迟 |
 | `use_exponential_backoff` | bool | true | 指数退避(true) / 固定间隔(false) |
+
+每次普通重试都带 jitter。有限重试轮次耗尽后不会每秒重新开始,而是进入另一层带 jitter 的指数退避,上限为 60 秒,再启动新一轮。session 成功建立后连续失败次数和外层退避都会重置。进程内 SSH 握手会串行执行,避免多个连接同时冲击服务器。
 
 ## 4. 示例
 
@@ -237,7 +239,7 @@ local     = "8080"
 remote    = "80"
 ```
 
-三个 channel 共用同一 SSH 连接的 host info(底层每个 channel 仍各自建一条 SSH session,详见 [architecture.md](./architecture.md))。
+三个 channel 的目标、用户、认证和 ProxyJump 链一致,因此共用一条 SSH session。该 session 断开时三个 channel 会一起重连;其他 SSH 路由不受影响。远程转发若使用相同的非零远端端口,会自动拆到不同 session,避免回调路由歧义。
 
 ### 4.7 通过 ProxyJump 访问内网 host
 
@@ -267,7 +269,7 @@ remote    = "3306"
 
 效果:本机 `127.0.0.1:3306` ⇄ `bastion` ⇄ `10.0.5.20:3306`。多跳就把 `ProxyJump` 写成逗号列表(`ProxyJump dmz-jump,inner-jump`),按从外到内的顺序。
 
-第一次跑之前确认跳板已在 `~/.ssh/known_hosts` 里:
+第一次跑之前确认目标主机和跳板都已在 `~/.ssh/known_hosts` 里:
 
 ```bash
 ssh-keyscan -p 22 bastion.example.com >> ~/.ssh/known_hosts

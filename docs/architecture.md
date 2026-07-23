@@ -23,7 +23,7 @@ SSH Channels Hub 是一个用于管理和维护多个 SSH channels 的 CLI 应�
        ▼                                   ▼
 ┌──────────────────┐            ┌──────────────────┐
 │  SSH Manager 1   │            │  SSH Manager N   │
-│  (Channel 1)     │            │  (Channel N)     │
+│  (Route Group 1) │            │  (Route Group N) │
 └────────┬─────────┘            └────────┬─────────┘
          │                               │
          ▼                               ▼
@@ -65,7 +65,7 @@ SSH Channels Hub 是一个用于管理和维护多个 SSH channels 的 CLI 应�
 
 #### 2.2.4 SSH 管理模块 (`ssh.rs`)
 
-- **职责**: 管理单个 SSH 连接和 channel
+- **职责**: 管理单个 SSH 连接及其兼容 channel 组
 - **功能**:
   - 建立 SSH 连接
   - 处理认证（密码/密钥）
@@ -92,11 +92,11 @@ SSH Channels Hub 是一个用于管理和维护多个 SSH channels 的 CLI 应�
    ↓
 3. 创建 ServiceManager
    ↓
-4. 为每个 channel 创建 SshManager
+4. 按目标、用户、认证和 ProxyJump 链对 channels 分组
    ↓
-5. 每个 SshManager 启动独立任务
+5. 为每组创建 SshManager 并启动独立任务
    ↓
-6. SshManager 建立连接并打开 channel
+6. SshManager 建立共享连接并启动组内 channels
    ↓
 7. 监控连接状态，自动重连
 ```
@@ -109,6 +109,8 @@ SSH Channels Hub 是一个用于管理和维护多个 SSH channels 的 CLI 应�
 检测到错误
    ↓
 使用 backon 计算重试延迟
+   ↓
+加入 jitter
    ↓
 等待延迟时间
    ↓
@@ -124,8 +126,8 @@ SSH Channels Hub 是一个用于管理和维护多个 SSH channels 的 CLI 应�
 ### 4.1 任务组织
 
 - **主任务**: 运行 CLI 命令处理
-- **服务任务**: 每个 channel 运行在独立的 `tokio::spawn` 任务中
-- **channel 任务**: 每个 channel 内部可能有多个子任务处理数据流
+- **服务任务**: 每个 SSH 路由组运行在独立的 `tokio::spawn` 任务中
+- **channel 任务**: 组内本地监听器各自运行子任务,共享同一 SSH session
 
 ### 4.2 同步原语
 
@@ -139,14 +141,16 @@ SSH Channels Hub 是一个用于管理和维护多个 SSH channels 的 CLI 应�
 
 1. **配置错误**: 文件不存在、格式错误 → 立即失败
 2. **连接错误**: 网络问题、服务器不可达 → 重试
-3. **认证错误**: 密码错误、密钥无效 → 记录错误，跳过该 channel
-4. **channel 错误**: channel 打开失败 → 重试
+3. **认证/Host Key 错误**: 记录错误并停止该路由组重试
+4. **channel 错误**: 标记该 channel 失败,其他组内 channel 继续运行
 
 ### 5.2 重试策略
 
 - **指数退避**: 默认策略，适用于临时性错误
 - **固定间隔**: 可选策略，适用于周期性重连
-- **最大重试次数**: 可配置，防止无限重试
+- **随机抖动**: 每次延迟加入 jitter,避免同步重连
+- **轮次耗尽**: 有限轮次结束后用最高 60 秒的 jitter 退避继续恢复
+- **成功重置**: session 建立成功后重新从第一次重试和最短外层延迟开始
 
 ## 6. 扩展性设计
 
@@ -154,7 +158,7 @@ SSH Channels Hub 是一个用于管理和维护多个 SSH channels 的 CLI 应�
 
 1. 在 `config.rs` 中添加新的 channel 类型定义
 2. 在 `ssh.rs` 中添加对应的处理函数
-3. 在 `SshManager::establish_connection` 中添加新的分支
+3. 在 `SshManager::establish_connection` 中注册新的组内 channel 任务
 
 ### 6.2 添加新的认证方式
 
@@ -164,7 +168,7 @@ SSH Channels Hub 是一个用于管理和维护多个 SSH channels 的 CLI 应�
 ### 6.3 添加新的重连策略
 
 1. 在 `config.rs` 的 `ReconnectionConfig` 中添加配置选项
-2. 在 `ssh.rs` 的 `connect_and_manage_channel` 中实现新策略
+2. 在 `ssh.rs` 的 `connect_and_manage_channels` 中实现新策略
 
 ## 7. 性能考虑
 
@@ -176,7 +180,8 @@ SSH Channels Hub 是一个用于管理和维护多个 SSH channels 的 CLI 应�
 
 ### 7.2 并发优化
 
-- 每个 channel 独立运行，互不阻塞
+- 兼容 channel 复用 SSH session,减少连接和握手数量
+- SSH 握手全局单并发,避免故障恢复时形成连接风暴
 - 使用异步 I/O，避免阻塞线程
 - 合理设置重试延迟，避免资源浪费
 
@@ -190,9 +195,9 @@ SSH Channels Hub 是一个用于管理和维护多个 SSH channels 的 CLI 应�
 
 ### 8.2 连接安全
 
-- 默认接受所有服务器密钥（生产环境应验证）
+- 目标主机和 ProxyJump 均严格校验 `~/.ssh/known_hosts`
 - 支持所有 SSH 加密算法（由 russh 库决定）
-- 建议在生产环境中启用服务器密钥验证
+- 未记录或已变化的主机密钥会被拒绝且不会自动重试
 
 ## 9. 日志和监控
 

@@ -12,8 +12,8 @@ Reach for this when `ssh -L 3306:127.0.0.1:3306 db.example.com` has grown into *
 
 - **Declarative**: tunnels live in `config.toml`, not in shell history or terminal panes.
 - **No host config duplication**: host info (`HostName` / `User` / `Port` / `IdentityFile`) is read straight from `~/.ssh/config` — you reference aliases.
-- **ProxyJump aware**: chain through bastions defined in `~/.ssh/config` — alias-only references, publickey auth, strict `known_hosts` check. See [docs/configuration.md §3.4](docs/configuration.md#34-host-info-从哪里来).
-- **Auto-reconnect**: configurable backoff per tunnel; one drop doesn't take the others down.
+- **ProxyJump aware**: chain through bastions defined in `~/.ssh/config` — alias-only references, publickey auth, and strict `known_hosts` checks for targets and jumps. See [docs/configuration.md §3.4](docs/configuration.md#34-host-info-从哪里来).
+- **Auto-reconnect**: compatible tunnels share one SSH session; a dropped route reconnects with jittered backoff without disturbing other routes.
 - **Both directions in one schema**: local-to-remote (`ssh -L`) and remote-to-local (`ssh -R`).
 - **Foreground or daemon**: `start` attaches to the terminal, `start -D` detaches; `stop` / `restart` / `status` talk to the running process via IPC.
 
@@ -121,6 +121,11 @@ initial_delay_secs      = 1
 max_delay_secs          = 30
 use_exponential_backoff = true
 ```
+
+Each retry delay includes jitter. After a finite retry cycle is exhausted,
+automatic recovery continues with a second exponential backoff capped at 60
+seconds; a successful session resets both counters. SSH handshakes are
+serialized to avoid reconnect storms.
 
 ### More examples
 
