@@ -466,7 +466,6 @@ impl SshManager {
     let health_for_attempt = health.clone();
     let health_for_notify = health.clone();
     let attempt_for_notify = attempt_counter.clone();
-    let was_connected = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     (|| {
       let n = attempt_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
@@ -476,16 +475,7 @@ impl SshManager {
       );
       let health = health.clone();
       let cancel = cancel.clone();
-      let was_connected = was_connected.clone();
-      async move {
-        let result =
-          Self::establish_connection(configs, cancel, health, was_connected.clone()).await;
-        if result.is_err() && was_connected.swap(false, std::sync::atomic::Ordering::Relaxed) {
-          Ok(())
-        } else {
-          result
-        }
-      }
+      async move { Self::establish_connection(configs, cancel, health).await }
     })
     .retry(&builder)
     .when(AppError::is_retryable)
@@ -515,7 +505,6 @@ impl SshManager {
     configs: &[ChannelConfig],
     cancel: CancellationToken,
     health: Vec<Arc<StdMutex<ChannelHealth>>>,
-    was_connected: Arc<std::sync::atomic::AtomicBool>,
   ) -> Result<()> {
     let route = configs
       .first()
@@ -565,7 +554,6 @@ impl SshManager {
         {
           Ok(()) => {
             active_reverse_forwards += 1;
-            was_connected.store(true, std::sync::atomic::Ordering::Relaxed);
           }
           Err(error) if !error.is_retryable() => {
             error!(channel = %config.name, error = ?error, "Remote forward disabled");
@@ -585,18 +573,29 @@ impl SshManager {
     let mut channel_tasks = JoinSet::new();
     for (index, (config, channel_health)) in configs.iter().zip(&health).enumerate() {
       if matches!(&config.params, ChannelTypeParams::DirectTcpIp { .. }) {
-        let session = session.clone();
-        let config = config.clone();
-        let cancel = cancel.clone();
-        let channel_health = channel_health.clone();
-        let was_connected = was_connected.clone();
-        channel_tasks.spawn(async move {
-          (
-            index,
-            run_direct_tcpip_listener(session, &config, cancel, channel_health, was_connected)
-              .await,
-          )
-        });
+        match bind_direct_tcpip_listener(config, channel_health).await {
+          Ok(listener) => {
+            let session = session.clone();
+            let config = config.clone();
+            let cancel = cancel.clone();
+            channel_tasks.spawn(async move {
+              (
+                index,
+                run_direct_tcpip_listener(session, &config, cancel, listener).await,
+              )
+            });
+          }
+          Err(error) if !error.is_retryable() => {
+            error!(channel = %config.name, error = ?error, "Local forward disabled");
+            set_health(
+              channel_health,
+              ChannelHealth::Failed {
+                error: error.to_string(),
+              },
+            );
+          }
+          Err(error) => return Err(error),
+        }
       }
     }
 
@@ -618,7 +617,9 @@ impl SshManager {
         _ = session_check.tick() => {
           if session.is_closed() {
             channel_tasks.shutdown().await;
-            return Err(AppError::SshConnection("SSH session closed".into()));
+            return established_session_outcome(AppError::SshConnection(
+              "SSH session closed".into(),
+            ));
           }
         }
         task = channel_tasks.join_next(), if !channel_tasks.is_empty() => {
@@ -643,7 +644,7 @@ impl SshManager {
             }
             Some(Ok((_, Err(error)))) => {
               channel_tasks.shutdown().await;
-              return Err(error);
+              return established_session_outcome(error);
             }
             Some(Err(error)) => {
               channel_tasks.shutdown().await;
@@ -747,6 +748,16 @@ fn jittered_retry_delay(delay: Duration) -> Duration {
     .build()
     .next()
     .expect("single retry delay")
+}
+
+/// `Ok` tells the outer manager to reset the finite retry cycle only after a
+/// working session later ends with a transient transport error.
+fn established_session_outcome(error: AppError) -> Result<()> {
+  if error.is_retryable() {
+    Ok(())
+  } else {
+    Err(error)
+  }
 }
 
 /// Register one remote forward on an already-authenticated shared session.
@@ -1080,23 +1091,18 @@ async fn load_secret_key(key_path: &Path, passphrase: Option<&str>) -> Result<Ke
   .map_err(|e| AppError::SshAuthentication(format!("Task join error: {}", e)))?
 }
 
-/// Run local TCP listener and forward each connection via a new direct-tcpip channel.
-async fn run_direct_tcpip_listener(
-  session: Arc<client::Handle<ClientHandler>>,
+async fn bind_direct_tcpip_listener(
   config: &ChannelConfig,
-  cancel: CancellationToken,
-  health: Arc<StdMutex<ChannelHealth>>,
-  was_connected: Arc<std::sync::atomic::AtomicBool>,
-) -> Result<()> {
+  health: &Arc<StdMutex<ChannelHealth>>,
+) -> Result<TcpListener> {
   let ChannelTypeParams::DirectTcpIp {
     listen_host,
     local_port,
-    dest_host,
-    dest_port,
+    ..
   } = &config.params
   else {
     return Err(AppError::SshChannel(
-      "run_direct_tcpip_listener expects DirectTcpIp params".to_string(),
+      "bind_direct_tcpip_listener expects DirectTcpIp params".to_string(),
     ));
   };
 
@@ -1115,8 +1121,27 @@ async fn run_direct_tcpip_listener(
   );
   // Listener bound → ready to relay. Flip before the accept loop so `status`
   // sees Connected immediately, not only after the first client connects.
-  set_health(&health, ChannelHealth::Connected);
-  was_connected.store(true, std::sync::atomic::Ordering::Relaxed);
+  set_health(health, ChannelHealth::Connected);
+  Ok(listener)
+}
+
+/// Run a bound local TCP listener and forward connections via direct-tcpip channels.
+async fn run_direct_tcpip_listener(
+  session: Arc<client::Handle<ClientHandler>>,
+  config: &ChannelConfig,
+  cancel: CancellationToken,
+  listener: TcpListener,
+) -> Result<()> {
+  let ChannelTypeParams::DirectTcpIp {
+    dest_host,
+    dest_port,
+    ..
+  } = &config.params
+  else {
+    return Err(AppError::SshChannel(
+      "run_direct_tcpip_listener expects DirectTcpIp params".to_string(),
+    ));
+  };
 
   loop {
     tokio::select! {
@@ -1209,5 +1234,17 @@ mod tests {
       assert!(delay >= Duration::from_secs(base_secs));
       assert!(delay < Duration::from_secs(base_secs + 1));
     }
+  }
+
+  #[test]
+  fn only_transient_errors_reset_an_established_session_retry_cycle() {
+    assert!(
+      established_session_outcome(AppError::SshConnection("reset".into())).is_ok(),
+      "a dropped working session should start a fresh retry cycle"
+    );
+    assert!(
+      established_session_outcome(AppError::SshChannel("listener failed".into())).is_err(),
+      "permanent errors must not be swallowed after a session was established"
+    );
   }
 }
