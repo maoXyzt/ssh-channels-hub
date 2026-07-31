@@ -157,8 +157,10 @@ impl client::Handler for JumpClientHandler {
 /// SSH client handler for direct-tcpip (local forwarding)
 #[derive(Clone)]
 struct ClientHandler {
+  channels: String,
   host: String,
   port: u16,
+  via: String,
   reverse_routes: ReverseRoutes,
 }
 
@@ -178,29 +180,54 @@ impl client::Handler for ClientHandler {
     &mut self,
     server_public_key: &russh_keys::key::PublicKey,
   ) -> std::result::Result<bool, Self::Error> {
+    let known_hosts_path = dirs::home_dir()
+      .map(|home| home.join(".ssh").join("known_hosts"))
+      .map(|path| path.display().to_string())
+      .unwrap_or_else(|| "<home-not-found>".to_string());
+    let server_key_algorithm = server_public_key.name();
+    let server_key_fingerprint = server_public_key.fingerprint();
+
     match russh_keys::check_known_hosts(&self.host, self.port, server_public_key) {
       Ok(true) => Ok(true),
       Ok(false) => {
         error!(
+          channels = %self.channels,
           host = %self.host,
           port = self.port,
-          "SSH target is not in known_hosts; refusing connection"
+          via = %self.via,
+          known_hosts = %known_hosts_path,
+          server_key_algorithm = %server_key_algorithm,
+          server_key_fingerprint = %server_key_fingerprint,
+          "SSH target key is not trusted; refusing. Verify the fingerprint, then run \
+           `ssh-keyscan -p {} {} >> ~/.ssh/known_hosts`.",
+          self.port, self.host
         );
         Ok(false)
       }
       Err(russh_keys::Error::KeyChanged { line }) => {
         error!(
+          channels = %self.channels,
           host = %self.host,
           port = self.port,
+          via = %self.via,
+          known_hosts = %known_hosts_path,
           known_hosts_line = line,
-          "SSH target host key changed; refusing connection"
+          server_key_algorithm = %server_key_algorithm,
+          server_key_fingerprint = %server_key_fingerprint,
+          "SSH target host key changed; refusing. Verify the fingerprint out-of-band, \
+           then remove the stale known_hosts line."
         );
         Ok(false)
       }
       Err(error) => {
         error!(
+          channels = %self.channels,
           host = %self.host,
           port = self.port,
+          via = %self.via,
+          known_hosts = %known_hosts_path,
+          server_key_algorithm = %server_key_algorithm,
+          server_key_fingerprint = %server_key_fingerprint,
           error = ?error,
           "SSH target known_hosts check failed"
         );
@@ -310,6 +337,12 @@ impl SshManager {
     let reconnection_config = self.reconnection_config.clone();
     let health = self.health.clone();
     let route_name = format!("{}@{}:{}", route.username, route.host, route.port);
+    let channel_names = self
+      .configs
+      .iter()
+      .map(|config| config.name.as_str())
+      .collect::<Vec<_>>()
+      .join(", ");
 
     set_all_health(&health, ChannelHealth::Connecting { attempt: 1 });
 
@@ -373,7 +406,12 @@ impl SshManager {
             continue;
           }
           Err(error) if !error.is_retryable() => {
-            error!(route = %route_name, error = ?error, "Permanent SSH error; automatic retries stopped");
+            error!(
+              channels = %channel_names,
+              route = %route_name,
+              error = ?error,
+              "Permanent SSH error; automatic retries stopped"
+            );
             let error_message = error.to_string();
             for channel_health in &health {
               set_failed_unless_already(channel_health, &error_message);
@@ -529,8 +567,18 @@ impl SshManager {
 
     let reverse_routes = Arc::new(StdRwLock::new(HashMap::new()));
     let handler = ClientHandler {
+      channels: configs
+        .iter()
+        .map(|config| config.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", "),
       host: route.host.clone(),
       port: route.port,
+      via: route
+        .proxy_jumps
+        .last()
+        .map(|hop| hop.alias.clone())
+        .unwrap_or_else(|| "direct".to_string()),
       reverse_routes: reverse_routes.clone(),
     };
     let handshake_permit = SSH_HANDSHAKE_LIMIT
@@ -827,13 +875,28 @@ async fn register_forwarded_tcpip(
   Ok(())
 }
 
-/// Construct the shared russh client config (same keepalive policy for every hop).
-fn make_client_config() -> Arc<russh::client::Config> {
-  Arc::new(russh::client::Config {
+/// Match OpenSSH's behavior by preferring host-key algorithms already trusted
+/// for this host. Strict verification still happens in the client handler.
+fn make_client_config(host: &str, port: u16) -> Arc<russh::client::Config> {
+  let mut config = russh::client::Config {
     keepalive_interval: Some(Duration::from_secs(15)),
     keepalive_max: 3,
     ..Default::default()
-  })
+  };
+
+  if let Ok(keys) = russh_keys::known_host_keys(host, port) {
+    let known_algorithms: Vec<&str> = keys.iter().map(|(_, key)| key.name()).collect();
+    prioritize_known_host_key_algorithms(config.preferred.key.to_mut(), &known_algorithms);
+  }
+
+  Arc::new(config)
+}
+
+fn prioritize_known_host_key_algorithms(
+  algorithms: &mut [russh_keys::key::Name],
+  known_algorithms: &[&str],
+) {
+  algorithms.sort_by_key(|algorithm| !known_algorithms.contains(&algorithm.0));
 }
 
 fn map_ssh_connect_error(context: String, error: russh::Error) -> AppError {
@@ -860,11 +923,11 @@ async fn connect_via_chain<H>(
 where
   H: client::Handler<Error = russh::Error> + Send + 'static,
 {
-  let russh_cfg = make_client_config();
   let mut hops: Vec<client::Handle<JumpClientHandler>> =
     Vec::with_capacity(config.proxy_jumps.len());
 
   for (i, hop) in config.proxy_jumps.iter().enumerate() {
+    let russh_cfg = make_client_config(&hop.host, hop.port);
     let handler = JumpClientHandler {
       alias: hop.alias.clone(),
       host: hop.host.clone(),
@@ -926,6 +989,7 @@ where
     hops.push(session);
   }
 
+  let russh_cfg = make_client_config(&config.host, config.port);
   let mut terminal: client::Handle<H> = if hops.is_empty() {
     russh::client::connect(
       russh_cfg.clone(),
@@ -1223,6 +1287,16 @@ mod tests {
       msg.contains("password authentication rejected"),
       "expected rejected auth message, got: {msg}"
     );
+  }
+
+  #[test]
+  fn known_host_key_algorithms_are_negotiated_first() {
+    let mut algorithms = russh::Preferred::default().key.into_owned();
+
+    prioritize_known_host_key_algorithms(&mut algorithms, &["ecdsa-sha2-nistp256"]);
+
+    assert_eq!(algorithms[0], russh_keys::key::ECDSA_SHA2_NISTP256);
+    assert_eq!(algorithms[1], russh_keys::key::ED25519);
   }
 
   #[test]
