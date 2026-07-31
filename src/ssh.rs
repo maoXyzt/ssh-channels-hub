@@ -1,4 +1,6 @@
-use crate::config::{AuthConfig, ChannelConfig, ChannelTypeParams, Direction, ReconnectionConfig};
+use crate::config::{
+  AuthConfig, ChannelConfig, ChannelTypeParams, Direction, JumpHopConfig, ReconnectionConfig,
+};
 use crate::error::{AppError, Result};
 use crate::service::{ChannelHealth, ChannelStatus};
 use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder, Retryable};
@@ -172,6 +174,26 @@ struct ReverseDestination {
 
 type ReverseRoutes = Arc<StdRwLock<HashMap<u32, ReverseDestination>>>;
 
+fn channel_names(configs: &[ChannelConfig]) -> String {
+  configs
+    .iter()
+    .map(|config| config.name.as_str())
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
+fn proxy_jump_route(proxy_jumps: &[JumpHopConfig]) -> String {
+  if proxy_jumps.is_empty() {
+    "direct".to_string()
+  } else {
+    proxy_jumps
+      .iter()
+      .map(|hop| hop.alias.as_str())
+      .collect::<Vec<_>>()
+      .join(" -> ")
+  }
+}
+
 #[async_trait::async_trait]
 impl client::Handler for ClientHandler {
   type Error = russh::Error;
@@ -337,12 +359,7 @@ impl SshManager {
     let reconnection_config = self.reconnection_config.clone();
     let health = self.health.clone();
     let route_name = format!("{}@{}:{}", route.username, route.host, route.port);
-    let channel_names = self
-      .configs
-      .iter()
-      .map(|config| config.name.as_str())
-      .collect::<Vec<_>>()
-      .join(", ");
+    let channel_names = channel_names(&self.configs);
 
     set_all_health(&health, ChannelHealth::Connecting { attempt: 1 });
 
@@ -547,6 +564,7 @@ impl SshManager {
     let route = configs
       .first()
       .expect("SshManager::start rejects empty channel groups");
+    let via = proxy_jump_route(&route.proxy_jumps);
     if route.proxy_jumps.is_empty() {
       info!(
           host = %route.host,
@@ -555,30 +573,21 @@ impl SshManager {
           "Establishing shared SSH connection"
       );
     } else {
-      let chain: Vec<&str> = route.proxy_jumps.iter().map(|h| h.alias.as_str()).collect();
       info!(
           host = %route.host,
           port = route.port,
           channels = configs.len(),
-          via = %chain.join(" -> "),
+          via = %via,
           "Establishing shared SSH connection through ProxyJump chain"
       );
     }
 
     let reverse_routes = Arc::new(StdRwLock::new(HashMap::new()));
     let handler = ClientHandler {
-      channels: configs
-        .iter()
-        .map(|config| config.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", "),
+      channels: channel_names(configs),
       host: route.host.clone(),
       port: route.port,
-      via: route
-        .proxy_jumps
-        .last()
-        .map(|hop| hop.alias.clone())
-        .unwrap_or_else(|| "direct".to_string()),
+      via,
       reverse_routes: reverse_routes.clone(),
     };
     let handshake_permit = SSH_HANDSHAKE_LIMIT
@@ -1297,6 +1306,23 @@ mod tests {
 
     assert_eq!(algorithms[0], russh_keys::key::ECDSA_SHA2_NISTP256);
     assert_eq!(algorithms[1], russh_keys::key::ED25519);
+  }
+
+  #[test]
+  fn proxy_jump_route_displays_the_full_chain() {
+    let jump = |alias: &str| JumpHopConfig {
+      alias: alias.to_string(),
+      host: String::new(),
+      port: 22,
+      username: String::new(),
+      key_path: Path::new("").to_path_buf(),
+    };
+
+    assert_eq!(proxy_jump_route(&[]), "direct");
+    assert_eq!(
+      proxy_jump_route(&[jump("edge"), jump("inner")]),
+      "edge -> inner"
+    );
   }
 
   #[test]
