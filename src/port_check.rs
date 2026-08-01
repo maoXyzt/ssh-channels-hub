@@ -22,6 +22,8 @@ pub async fn is_port_available(host: &str, port: u16) -> Result<bool> {
       e
     )))
   })?;
+  #[cfg(unix)]
+  socket.set_reuseaddr(true).map_err(AppError::Io)?;
 
   match socket.bind(addr) {
     Ok(_) => Ok(true),
@@ -140,5 +142,17 @@ mod tests {
     let port = listener.local_addr().unwrap().port();
 
     assert!(!is_port_available("127.0.0.1", port).await.unwrap());
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn active_connection_does_not_block_rebinding_listener() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let _client = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let _connection = listener.accept().await.unwrap();
+    drop(listener);
+
+    assert!(is_port_available("127.0.0.1", port).await.unwrap());
   }
 }
