@@ -19,19 +19,29 @@
 
 ## 快速开始
 
-**1. 安装**
+**1. 直接运行或安装**
 
-从 [crates.io](https://crates.io/crates/ssh-channels-hub) 安装(推荐):
+推荐用 `uvx` 直接运行,无需安装:
 
 ```bash
-cargo install ssh-channels-hub
+uvx ssh-channels-hub --help
 ```
 
-或从源码构建:
+也可以安装到当前 Python 环境:
 
 ```bash
-cargo install --path .          # 在仓库 clone 内构建并安装
-# 或
+pip install ssh-channels-hub
+ssh-channels-hub --help
+```
+
+wheel 会安装同一个 `ssh-channels-hub` 二进制,覆盖 Linux x86_64、
+macOS arm64 和 Windows x86_64;运行时不会经过 Python。
+
+开发时再下载源码构建:
+
+```bash
+git clone https://github.com/maoXyzt/ssh-channels-hub.git
+cd ssh-channels-hub
 cargo build --release           # 二进制位于 target/release/ssh-channels-hub(Windows 为 .exe)
 ```
 
@@ -58,6 +68,8 @@ remote    = "3306"              # 服务器连接其本网络里的 127.0.0.1:33
 **4. 启动**
 
 ```bash
+uvx ssh-channels-hub start      # 无需安装
+# 或在 pip install 后:
 ssh-channels-hub start          # Ctrl+C 退出
 ```
 

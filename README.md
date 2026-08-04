@@ -19,19 +19,29 @@ Reach for this when `ssh -L 3306:127.0.0.1:3306 db.example.com` has grown into *
 
 ## Quickstart
 
-**1. Install**
+**1. Run or install**
 
-From [crates.io](https://crates.io/crates/ssh-channels-hub) (recommended):
+Run directly with `uvx` (recommended, no installation required):
 
 ```bash
-cargo install ssh-channels-hub
+uvx ssh-channels-hub --help
 ```
 
-Or from a clone:
+Or install it into the current Python environment:
 
 ```bash
-cargo install --path .          # build & install from this checkout
-# or
+pip install ssh-channels-hub
+ssh-channels-hub --help
+```
+
+The wheel installs the same `ssh-channels-hub` binary on Linux x86_64,
+macOS arm64, and Windows x86_64; it does not run through Python.
+
+For development, clone and build the source:
+
+```bash
+git clone https://github.com/maoXyzt/ssh-channels-hub.git
+cd ssh-channels-hub
 cargo build --release           # binary at target/release/ssh-channels-hub (or .exe on Windows)
 ```
 
@@ -58,6 +68,8 @@ remote    = "3306"              # server connects to 127.0.0.1:3306
 **4. Run**
 
 ```bash
+uvx ssh-channels-hub start      # no installation
+# or, after pip install:
 ssh-channels-hub start          # Ctrl+C to stop
 ```
 
