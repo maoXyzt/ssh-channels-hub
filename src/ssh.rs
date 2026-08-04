@@ -3,6 +3,7 @@ use crate::config::{
 };
 use crate::error::{AppError, Result};
 use crate::service::{ChannelHealth, ChannelStatus};
+use crate::ssh_config;
 use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder, Retryable};
 use russh::*;
 use russh_keys::key::KeyPair;
@@ -21,6 +22,16 @@ const EXHAUSTED_RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
 // ponytail: one global permit favors server safety; use per-route semaphores if
 // unrelated hosts need parallel handshakes.
 static SSH_HANDSHAKE_LIMIT: Semaphore = Semaphore::const_new(1);
+
+fn check_known_host_key(
+  host: &str,
+  port: u16,
+  server_public_key: &russh_keys::key::PublicKey,
+  known_hosts_path: Option<&Path>,
+) -> std::result::Result<bool, russh_keys::Error> {
+  let path = known_hosts_path.ok_or(russh_keys::Error::NoHomeDir)?;
+  russh_keys::check_known_hosts_path(host, port, server_public_key, path)
+}
 
 /// SSH client handler for ProxyJump hops.
 ///
@@ -43,7 +54,7 @@ impl client::Handler for JumpClientHandler {
     server_public_key: &russh_keys::key::PublicKey,
   ) -> std::result::Result<bool, Self::Error> {
     let home = dirs::home_dir();
-    let known_hosts_path = home.as_ref().map(|h| h.join(".ssh").join("known_hosts"));
+    let known_hosts_path = ssh_config::default_known_hosts_path();
     let known_hosts_path_display = known_hosts_path
       .as_ref()
       .map(|p| p.display().to_string())
@@ -101,7 +112,12 @@ impl client::Handler for JumpClientHandler {
       }
     }
 
-    match russh_keys::check_known_hosts(&self.host, self.port, server_public_key) {
+    match check_known_host_key(
+      &self.host,
+      self.port,
+      server_public_key,
+      known_hosts_path.as_deref(),
+    ) {
       Ok(true) => Ok(true),
       Ok(false) => {
         error!(
@@ -202,14 +218,20 @@ impl client::Handler for ClientHandler {
     &mut self,
     server_public_key: &russh_keys::key::PublicKey,
   ) -> std::result::Result<bool, Self::Error> {
-    let known_hosts_path = dirs::home_dir()
-      .map(|home| home.join(".ssh").join("known_hosts"))
+    let known_hosts_path = ssh_config::default_known_hosts_path();
+    let known_hosts_path_display = known_hosts_path
+      .as_ref()
       .map(|path| path.display().to_string())
       .unwrap_or_else(|| "<home-not-found>".to_string());
     let server_key_algorithm = server_public_key.name();
     let server_key_fingerprint = server_public_key.fingerprint();
 
-    match russh_keys::check_known_hosts(&self.host, self.port, server_public_key) {
+    match check_known_host_key(
+      &self.host,
+      self.port,
+      server_public_key,
+      known_hosts_path.as_deref(),
+    ) {
       Ok(true) => Ok(true),
       Ok(false) => {
         error!(
@@ -217,7 +239,7 @@ impl client::Handler for ClientHandler {
           host = %self.host,
           port = self.port,
           via = %self.via,
-          known_hosts = %known_hosts_path,
+          known_hosts = %known_hosts_path_display,
           server_key_algorithm = %server_key_algorithm,
           server_key_fingerprint = %server_key_fingerprint,
           "SSH target key is not trusted; refusing. Verify the fingerprint, then run \
@@ -232,7 +254,7 @@ impl client::Handler for ClientHandler {
           host = %self.host,
           port = self.port,
           via = %self.via,
-          known_hosts = %known_hosts_path,
+          known_hosts = %known_hosts_path_display,
           known_hosts_line = line,
           server_key_algorithm = %server_key_algorithm,
           server_key_fingerprint = %server_key_fingerprint,
@@ -247,7 +269,7 @@ impl client::Handler for ClientHandler {
           host = %self.host,
           port = self.port,
           via = %self.via,
-          known_hosts = %known_hosts_path,
+          known_hosts = %known_hosts_path_display,
           server_key_algorithm = %server_key_algorithm,
           server_key_fingerprint = %server_key_fingerprint,
           error = ?error,
@@ -893,7 +915,9 @@ fn make_client_config(host: &str, port: u16) -> Arc<russh::client::Config> {
     ..Default::default()
   };
 
-  if let Ok(keys) = russh_keys::known_host_keys(host, port) {
+  if let Some(path) = ssh_config::default_known_hosts_path()
+    && let Ok(keys) = russh_keys::known_host_keys_path(host, port, path)
+  {
     let known_algorithms: Vec<&str> = keys.iter().map(|(_, key)| key.name()).collect();
     prioritize_known_host_key_algorithms(config.preferred.key.to_mut(), &known_algorithms);
   }

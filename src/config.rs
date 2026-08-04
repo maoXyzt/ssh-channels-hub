@@ -686,18 +686,16 @@ pub fn check_jump_preflight(
   let mut seen_keys: HashSet<PathBuf> = HashSet::new();
   let mut seen_hosts: HashSet<(String, u16)> = HashSet::new();
 
-  let known_hosts_present = match known_hosts_override {
-    Some(p) => p.exists(),
-    None => dirs::home_dir()
-      .map(|h| h.join(".ssh").join("known_hosts"))
-      .map(|p| p.exists())
-      .unwrap_or(false),
-  };
+  let known_hosts_path = known_hosts_override
+    .map(PathBuf::from)
+    .or_else(ssh_config::default_known_hosts_path);
+  let existing_known_hosts = known_hosts_path.as_ref().filter(|path| path.exists());
 
   let any_jump = channels.iter().any(|c| !c.proxy_jumps.is_empty());
-  if any_jump && !known_hosts_present {
-    let where_ = known_hosts_override
-      .map(|p| p.display().to_string())
+  if any_jump && existing_known_hosts.is_none() {
+    let where_ = known_hosts_path
+      .as_ref()
+      .map(|path| path.display().to_string())
       .unwrap_or_else(|| "~/.ssh/known_hosts".to_string());
     report.warnings.push(format!(
       "ProxyJump is in use but {} does not exist. \
@@ -720,11 +718,10 @@ pub fn check_jump_preflight(
       }
 
       let host_key = (hop.host.clone(), hop.port);
-      if known_hosts_present && seen_hosts.insert(host_key) {
-        let lookup = match known_hosts_override {
-          Some(p) => russh_keys::known_host_keys_path(&hop.host, hop.port, p),
-          None => russh_keys::known_host_keys(&hop.host, hop.port),
-        };
+      if let Some(path) = existing_known_hosts
+        && seen_hosts.insert(host_key)
+      {
+        let lookup = russh_keys::known_host_keys_path(&hop.host, hop.port, path);
         match lookup {
           Ok(v) if v.is_empty() => {
             report.warnings.push(format!(
