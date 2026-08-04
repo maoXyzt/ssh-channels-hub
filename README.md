@@ -27,7 +27,7 @@ Run directly with `uvx` (recommended, no installation required):
 uvx ssh-channels-hub --help
 ```
 
-Or install it into the current Python environment:
+Or install it with `pip` inside an activated virtual environment:
 
 ```bash
 pip install ssh-channels-hub
@@ -71,6 +71,9 @@ remote    = "3306"              # server connects to 127.0.0.1:3306
 uvx ssh-channels-hub start      # no installation
 # or, after pip install:
 ssh-channels-hub start          # Ctrl+C to stop
+# or, after cargo build:
+./target/release/ssh-channels-hub start       # Linux/macOS
+.\target\release\ssh-channels-hub.exe start  # Windows PowerShell
 ```
 
 Now `mysql -h 127.0.0.1 -P 3306` goes through the tunnel.

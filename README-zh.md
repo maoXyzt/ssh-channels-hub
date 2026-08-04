@@ -27,7 +27,7 @@
 uvx ssh-channels-hub --help
 ```
 
-也可以安装到当前 Python 环境:
+也可以在已激活的 Python 虚拟环境中用 `pip` 安装:
 
 ```bash
 pip install ssh-channels-hub
@@ -71,6 +71,9 @@ remote    = "3306"              # 服务器连接其本网络里的 127.0.0.1:33
 uvx ssh-channels-hub start      # 无需安装
 # 或在 pip install 后:
 ssh-channels-hub start          # Ctrl+C 退出
+# 或在 cargo build 后:
+./target/release/ssh-channels-hub start       # Linux/macOS
+.\target\release\ssh-channels-hub.exe start  # Windows PowerShell
 ```
 
 之后 `mysql -h 127.0.0.1 -P 3306` 就走 SSH 隧道了。
