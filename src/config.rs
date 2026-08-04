@@ -689,13 +689,10 @@ pub fn check_jump_preflight(
   let known_hosts_path = known_hosts_override
     .map(PathBuf::from)
     .or_else(ssh_config::default_known_hosts_path);
-  let known_hosts_present = known_hosts_path
-    .as_ref()
-    .map(|path| path.exists())
-    .unwrap_or(false);
+  let existing_known_hosts = known_hosts_path.as_ref().filter(|path| path.exists());
 
   let any_jump = channels.iter().any(|c| !c.proxy_jumps.is_empty());
-  if any_jump && !known_hosts_present {
+  if any_jump && existing_known_hosts.is_none() {
     let where_ = known_hosts_path
       .as_ref()
       .map(|path| path.display().to_string())
@@ -721,14 +718,10 @@ pub fn check_jump_preflight(
       }
 
       let host_key = (hop.host.clone(), hop.port);
-      if known_hosts_present && seen_hosts.insert(host_key) {
-        let lookup = russh_keys::known_host_keys_path(
-          &hop.host,
-          hop.port,
-          known_hosts_path
-            .as_ref()
-            .expect("known_hosts_present requires a path"),
-        );
+      if let Some(path) = existing_known_hosts
+        && seen_hosts.insert(host_key)
+      {
+        let lookup = russh_keys::known_host_keys_path(&hop.host, hop.port, path);
         match lookup {
           Ok(v) if v.is_empty() => {
             report.warnings.push(format!(

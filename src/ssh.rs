@@ -23,6 +23,16 @@ const EXHAUSTED_RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
 // unrelated hosts need parallel handshakes.
 static SSH_HANDSHAKE_LIMIT: Semaphore = Semaphore::const_new(1);
 
+fn check_known_host_key(
+  host: &str,
+  port: u16,
+  server_public_key: &russh_keys::key::PublicKey,
+  known_hosts_path: Option<&Path>,
+) -> std::result::Result<bool, russh_keys::Error> {
+  let path = known_hosts_path.ok_or(russh_keys::Error::NoHomeDir)?;
+  russh_keys::check_known_hosts_path(host, port, server_public_key, path)
+}
+
 /// SSH client handler for ProxyJump hops.
 ///
 /// Uses the jump hop's resolved host and port for strict `known_hosts`
@@ -102,13 +112,12 @@ impl client::Handler for JumpClientHandler {
       }
     }
 
-    let key_check = known_hosts_path
-      .as_ref()
-      .ok_or(russh_keys::Error::NoHomeDir)
-      .and_then(|path| {
-        russh_keys::check_known_hosts_path(&self.host, self.port, server_public_key, path)
-      });
-    match key_check {
+    match check_known_host_key(
+      &self.host,
+      self.port,
+      server_public_key,
+      known_hosts_path.as_deref(),
+    ) {
       Ok(true) => Ok(true),
       Ok(false) => {
         error!(
@@ -217,13 +226,12 @@ impl client::Handler for ClientHandler {
     let server_key_algorithm = server_public_key.name();
     let server_key_fingerprint = server_public_key.fingerprint();
 
-    let key_check = known_hosts_path
-      .as_ref()
-      .ok_or(russh_keys::Error::NoHomeDir)
-      .and_then(|path| {
-        russh_keys::check_known_hosts_path(&self.host, self.port, server_public_key, path)
-      });
-    match key_check {
+    match check_known_host_key(
+      &self.host,
+      self.port,
+      server_public_key,
+      known_hosts_path.as_deref(),
+    ) {
       Ok(true) => Ok(true),
       Ok(false) => {
         error!(
