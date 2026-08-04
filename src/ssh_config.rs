@@ -59,6 +59,15 @@ pub fn default_ssh_config_path() -> PathBuf {
   }
 }
 
+fn known_hosts_path_for(home: &Path) -> PathBuf {
+  home.join(".ssh").join("known_hosts")
+}
+
+/// Get the per-user known_hosts path used by OpenSSH.
+pub fn default_known_hosts_path() -> Option<PathBuf> {
+  dirs::home_dir().map(|home| known_hosts_path_for(&home))
+}
+
 /// Expand tilde (~) in path
 fn expand_tilde(path: &Path) -> Result<PathBuf> {
   let path_str = path.to_string_lossy();
@@ -386,6 +395,16 @@ fn expand_tilde_in_path(path: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn windows_known_hosts_uses_openssh_dot_ssh_directory() {
+    let home = Path::new(r"C:\Users\test");
+
+    assert_eq!(
+      known_hosts_path_for(home),
+      home.join(".ssh").join("known_hosts")
+    );
+  }
 
   #[test]
   fn test_parse_simple_ssh_config() {
