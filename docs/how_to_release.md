@@ -6,7 +6,7 @@
 
 ## 1. 总览
 
-发版分两段:**本地** 用 `cargo release` 同时 bump 版本号 + 打 tag + 推送;**CI** 监听 `v*` tag,自动跑 lint/test、编译三个平台二进制、生成 changelog、创建 GitHub Release,并发布到 crates.io。
+发版分两段:**本地** 用 `cargo release` 同时 bump 版本号 + 打 tag + 推送;**CI** 监听 `v*` tag,自动跑 lint/test、编译三个平台二进制和 Python wheel、生成 changelog、创建 GitHub Release,并发布到 crates.io 和 PyPI。
 
 ```
 本地: cargo release patch --execute
@@ -21,11 +21,13 @@ GitHub Actions (build.yml) ←┘
   ├─ lint             (fmt + clippy -D warnings + cargo test)
   ├─ changelog        (git-cliff 从 conventional commits 生成 release notes)
   ├─ build (×3)       (linux-gnu / aarch64-darwin / windows-msvc)
+  ├─ wheels (×3)      (同三平台,maturin 打 Python wheel)
   ├─ release          (GitHub Release + tarball/zip + .sha256)
-  └─ publish          (cargo publish → crates.io)
+  ├─ publish          (cargo publish → crates.io)
+  └─ publish-pypi     (OIDC → PyPI)
 ```
 
-`release` 和 `publish` 都强依赖 `lint` 和 `verify-tag`,任何一项失败都不会发布。
+`release`、`publish` 和 `publish-pypi` 都强依赖 `lint` 和 `verify-tag`,任何一项失败都不会发布。PyPI 版本由 maturin 直接读取 `Cargo.toml`,`cargo release` 仍是唯一版本来源。
 
 ## 2. 一次性准备
 
@@ -43,6 +45,21 @@ cargo install cargo-release
    - Value: 上一步生成的 token
 
 token 只在第一次配置和需要轮换时操作,日常发版无需关心。
+
+### 2.3 准备 PyPI Trusted Publisher(仓库管理员一次性)
+
+PyPI 使用 Trusted Publisher(OIDC),不需要长期 token。首次发布前:
+
+1. 在 GitHub 仓库的 **Settings → Environments** 创建名为 `pypi` 的 environment。
+2. 登录 <https://pypi.org/manage/account/publishing/>,添加 pending publisher:
+   - PyPI Project Name: `ssh-channels-hub`
+   - Owner: `maoXyzt`
+   - Repository name: `ssh-channels-hub`
+   - Workflow filename: `build.yml`
+   - Environment name: `pypi`
+3. 第一次发布成功后,pending publisher 会自动转为正式 publisher。
+
+没配置或字段不一致时,只有 `publish-pypi` job 会失败;补好配置后可直接重跑该 job。
 
 ## 3. 发版前检查
 
@@ -128,10 +145,11 @@ cargo release patch --execute
 ### 4.4 等 CI 跑完
 
 1. <https://github.com/maoXyzt/ssh-channels-hub/actions> 观察 `build` workflow
-2. 顺序:`preflight` + `verify-tag` → `lint` → `build (×3)` + `changelog` → `release` + `publish`
+2. 顺序:`preflight` + `verify-tag` → `lint` → `build (×3)` + `wheels (×3)` + `changelog` → `release` + `publish` + `publish-pypi`
 3. 全绿后:
    - GitHub Releases 出现 `v<new-version>`,挂着 3 份压缩包 + `.sha256`,body 是 git-cliff 渲染的 changelog
    - <https://crates.io/crates/ssh-channels-hub> 出现新版本
+   - <https://pypi.org/project/ssh-channels-hub/> 出现新版本和 3 份 wheel
 
 ## 5. 防呆机制
 
@@ -139,12 +157,13 @@ cargo release patch --execute
 
 | 风险 | 防御 |
 |---|---|
-| `Cargo.toml` 版本和 tag 不一致 | `cargo release` 同一动作产出两者;CI `verify-tag` job 还会再校验一次 tag↔manifest |
+| `Cargo.toml` 版本和 tag 不一致 | `cargo release` 同一动作产出两者;CI `publish` / `publish-pypi` 都依赖 `verify-tag` 再校验 tag↔manifest |
 | 本地误跑 `cargo publish` | `Cargo.toml` 的 `publish = false` 让 `cargo release` 跳过本地发布;只有 CI 用 `secrets.CARGO_REGISTRY_TOKEN` 推 |
-| 平台编译挂掉但已发包 | `publish` job 依赖 `build` 全绿;任何平台失败则不会触发 `cargo publish` |
+| 平台编译挂掉但已发包 | `publish` 依赖 `build` 全绿;`publish-pypi` 依赖 `wheels` 全绿 |
 | 代码有 fmt / clippy / 测试问题 | `lint` job 是 `release` / `publish` 的强依赖,失败则停发 |
 | PR 引入 metadata 回归(license / readme / include) | 非 tag 推送都触发 `publish-dry-run` job 跑 `cargo publish --dry-run` |
 | cargo-release 推 main + tag 触发双跑 CI | `preflight` job 识别 `release:` commit message,跳过 main 分支那一次重复构建 |
+| PyPI token 泄漏 | PyPI 走 OIDC Trusted Publisher,没有长期 token |
 
 ## 6. 故障排查
 
@@ -174,6 +193,14 @@ git-cliff 只识别 conventional commits 前缀(见 §3.1)。检查那段时间�
 
 工具链 pin 在 `dtolnay/rust-toolchain@1.91`,clippy 规则不会无声跟着 stable 走。如果挂了,要么修代码,要么在 `Cargo.toml` 的 `[lints]` 或源码里加局部 `#[allow(...)]`。**不要** 把 `-D warnings` 改成 `-W warnings` 来绕过。
 
+### `publish-pypi` job 报 `invalid-publisher` / 401
+
+检查 §2.3 的 project、owner、repository、workflow 和 environment 是否与 PyPI 后台完全一致。修正后重跑 `publish-pypi` job,无需重打 tag。
+
+### `publish-pypi` job 报 `File already exists`
+
+PyPI 不允许覆盖同版本文件。必须 bump 新版本后重新发布。
+
 ## 7. 撤回已发版本
 
 crates.io 不允许删除版本,只能 `yank`(标记为不推荐使用,新项目无法添加这个版本作依赖,已锁定的项目仍可下载):
@@ -182,5 +209,7 @@ crates.io 不允许删除版本,只能 `yank`(标记为不推荐使用,新项目
 cargo yank --version 0.2.1
 cargo yank --version 0.2.1 --undo   # 反悔
 ```
+
+PyPI 版本也不能覆盖;需要撤回时在 PyPI 版本页面执行 yank。
 
 GitHub Release 可以直接在网页删除;git tag 用 `git push --delete origin v0.2.1` 移除。

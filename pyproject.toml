@@ -1,0 +1,37 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "ssh-channels-hub"
+description = "A CLI tool for managing SSH port forwarding tunnels with auto-reconnect"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.8"
+keywords = ["ssh", "tunnel", "port-forwarding", "proxy", "cli"]
+authors = [{ name = "maoXyzt" }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: System :: Networking",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/maoXyzt/ssh-channels-hub"
+Repository = "https://github.com/maoXyzt/ssh-channels-hub"
+Issues = "https://github.com/maoXyzt/ssh-channels-hub/issues"
+
+# Package the Rust binary directly; no Python wrapper runs at install time.
+# Maturin reads the version from Cargo.toml, keeping cargo-release authoritative.
+[tool.maturin]
+bindings = "bin"
+manifest-path = "Cargo.toml"
+strip = true
