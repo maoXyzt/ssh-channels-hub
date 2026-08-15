@@ -111,11 +111,11 @@ async fn spawn_daemon(config_path: &Path, debug: bool) -> AnyhowResult<()> {
   ui::success("Service started in daemon mode");
   if web_enabled {
     match wait_for_web_port(config_path).await {
-      Ok(port) => ui::info(format!("Web status: http://127.0.0.1:{}", port)),
+      Ok(port) => ui::web_address(format!("http://127.0.0.1:{}", port)),
       Err(error) => ui::warn(format!("Web status address unavailable: {}", error)),
     }
   }
-  ui::hint("Run `ssh-channels-hub status` to inspect the live state.");
+  ui::daemon_commands();
   Ok(())
 }
 
@@ -187,13 +187,14 @@ async fn handle_start(
 
   if let Some(web_port) = web_port {
     write_web_port(&web_port_file_path(&config_path), web_port).context("Write Web port file")?;
-    ui::info(format!("Web status: http://127.0.0.1:{}", web_port));
+    ui::web_address(format!("http://127.0.0.1:{}", web_port));
   } else {
     let _ = std::fs::remove_file(web_port_file_path(&config_path));
   }
 
   println!();
   ui::info("Service running in foreground. Press Ctrl+C to stop.");
+  ui::hint("Use `ssh-channels-hub start -D` to run in daemon mode.");
 
   tokio::select! {
       _ = tokio::signal::ctrl_c() => {}

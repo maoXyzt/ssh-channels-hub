@@ -185,10 +185,11 @@ fn render(status: &ServiceStatus) -> String {
   let mut rows = String::new();
   for channel in &status.channels {
     let (health, health_class, detail) = health_view(&channel.health);
-    let (direction_class, direction_label, direction_arrow) = match channel.direction {
-      Direction::LocalToRemote => ("outbound", "SSH -L", "->"),
-      Direction::RemoteToLocal => ("inbound", "SSH -R", "<-"),
-    };
+    let (direction_class, direction_label, direction_transport, direction_arrow) =
+      match channel.direction {
+        Direction::LocalToRemote => ("outbound", "Outbound", "SSH -L", "→"),
+        Direction::RemoteToLocal => ("inbound", "Inbound", "SSH -R", "←"),
+      };
     let action = local_url(&channel.local)
       .map(|url| {
         format!(
@@ -208,9 +209,13 @@ fn render(status: &ServiceStatus) -> String {
 
     let _ = write!(
       rows,
-      "<tr><td class=\"channel\" data-label=\"Channel\"><strong>{}</strong><span>{}</span></td><td class=\"route-cell\" data-label=\"Route\"><div class=\"route\"><div class=\"endpoint local\"><span>Local</span><code>{}</code></div><div class=\"rail {}\" aria-label=\"{}\"><i></i><b>{}</b></div><div class=\"endpoint remote\"><span>Remote</span><code>{}</code></div></div></td><td class=\"health-cell\" data-label=\"Health\"><span class=\"health {}\"><i></i>{}</span>{}</td><td class=\"action\">{}</td></tr>",
+      "<tr><td class=\"channel\" data-label=\"Channel\"><strong>{}</strong><span class=\"direction {}\"><i aria-hidden=\"true\">{}</i><b>{}</b><code>{}</code></span></td><td class=\"route-cell\" data-label=\"Route\"><div class=\"route {}\"><div class=\"endpoint local\"><span>Local</span><code>{}</code></div><div class=\"rail {}\" aria-label=\"{}\"><i></i><b aria-hidden=\"true\">{}</b></div><div class=\"endpoint remote\"><span>Remote</span><code>{}</code></div></div></td><td class=\"health-cell\" data-label=\"Health\"><span class=\"health {}\"><i></i>{}</span>{}</td><td class=\"action\">{}</td></tr>",
       escape_html(&channel.name),
+      direction_class,
+      direction_arrow,
       direction_label,
+      direction_transport,
+      direction_class,
       escape_html(&channel.local),
       direction_class,
       channel.direction.as_arrow(),
@@ -240,7 +245,7 @@ fn render(status: &ServiceStatus) -> String {
 <meta http-equiv="refresh" content="3">
 <title>SSH Channels Hub</title>
 <style>
-:root{{--canvas:#f2f4f3;--surface:#fbfcfb;--surface-hover:#f7f9f8;--ink:#17201d;--secondary:#53605b;--tertiary:#75807c;--muted:#919a96;--line:rgba(23,32,29,.12);--line-soft:rgba(23,32,29,.07);--line-strong:rgba(23,32,29,.2);--green:#14734a;--green-soft:#e4f3eb;--amber:#8a5b08;--amber-soft:#fff2d5;--red:#a33b32;--red-soft:#fbe9e7;--blue:#215f8d;--blue-soft:#e8f1f7}}
+:root{{--canvas:#f2f4f3;--surface:#fbfcfb;--surface-hover:#f7f9f8;--ink:#17201d;--secondary:#53605b;--tertiary:#75807c;--muted:#919a96;--line:rgba(23,32,29,.12);--line-soft:rgba(23,32,29,.07);--line-strong:rgba(23,32,29,.2);--green:#14734a;--green-soft:#e4f3eb;--amber:#8a5b08;--amber-soft:#fff2d5;--red:#a33b32;--red-soft:#fbe9e7;--blue:#215f8d;--blue-soft:#e8f1f7;--inbound:#8b3f74;--inbound-soft:#f6e9f1}}
 *{{box-sizing:border-box}}
 body{{min-width:320px;min-height:100vh;margin:0;background:var(--canvas);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;letter-spacing:0}}
 .frame{{width:min(1180px,calc(100% - 40px));margin:0 auto;padding:36px 0 64px}}
@@ -264,33 +269,38 @@ h1{{margin:1px 0 0;font-size:21px;line-height:1.25;font-weight:720;letter-spacin
 .coverage-bar{{position:absolute;left:0;bottom:0;height:2px;max-width:100%;border-radius:1px;background:var(--green)}}
 .section-heading{{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin:30px 0 12px}}
 .section-heading h2{{margin:2px 0 0;font-size:16px;line-height:1.3;letter-spacing:0}}
+.section-meta{{display:flex;align-items:center;gap:14px}}
+.refresh{{display:inline-flex;align-items:center;gap:4px;color:var(--tertiary);font:11px/1 ui-monospace,SFMono-Regular,Consolas,monospace}}.refresh i{{color:var(--blue);font:700 15px/1 system-ui,-apple-system,"Segoe UI",sans-serif}}
 .count{{color:var(--tertiary);font-size:12px;font-variant-numeric:tabular-nums}}
 .panel{{overflow:hidden;background:var(--surface);border:1px solid var(--line);border-radius:6px}}
 table{{width:100%;border-collapse:collapse}}
 th,td{{padding:18px;text-align:left;border-bottom:1px solid var(--line-soft);vertical-align:middle}}
 th{{padding-top:11px;padding-bottom:11px;color:var(--muted);font-size:10px;font-weight:750;text-transform:uppercase}}
 tbody tr{{transition:background-color 140ms ease}}tbody tr:hover{{background:var(--surface-hover)}}tr:last-child td{{border-bottom:0}}
-.channel{{width:180px}}.channel strong{{display:block;font-size:14px;font-weight:720;overflow-wrap:anywhere}}.channel span{{display:block;margin-top:2px;color:var(--tertiary);font:10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}}
+.channel{{width:180px}}.channel strong{{display:block;font-size:14px;font-weight:720;overflow-wrap:anywhere}}
+.direction{{display:flex;align-items:center;gap:5px;width:max-content;margin-top:5px;color:var(--direction)}}.direction i{{display:grid;place-items:center;width:20px;height:20px;border-radius:4px;background:var(--direction-soft);font:800 14px/1 system-ui,-apple-system,"Segoe UI",sans-serif}}.direction b{{font-size:10px;text-transform:uppercase}}.direction code{{margin-left:1px;color:var(--tertiary);font:10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}}
+.outbound{{--direction:var(--blue);--direction-soft:var(--blue-soft)}}.inbound{{--direction:var(--inbound);--direction-soft:var(--inbound-soft)}}
 .route-cell{{width:52%}}
 .route{{display:grid;grid-template-columns:minmax(110px,1fr) 92px minmax(110px,1fr);align-items:center;gap:10px}}
 .endpoint{{min-width:0}}.endpoint span{{display:block;margin-bottom:3px;color:var(--muted);font-size:9px;font-weight:750;text-transform:uppercase}}.endpoint code{{display:block;color:var(--secondary);font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}}
-.rail{{position:relative;display:flex;align-items:center;justify-content:center;height:28px;color:var(--blue)}}
-.rail i{{position:absolute;left:0;right:0;top:13px;height:1px;background:var(--line-strong)}}
-.rail i::before,.rail i::after{{content:"";position:absolute;top:-3px;width:7px;height:7px;border:2px solid var(--blue);border-radius:50%;background:var(--surface)}}
+.route.outbound .remote code,.route.inbound .local code{{color:var(--direction);font-weight:720}}
+.rail{{position:relative;display:flex;align-items:center;justify-content:center;height:28px;color:var(--direction)}}
+.rail i{{position:absolute;left:0;right:0;top:13px;height:2px;background:var(--direction)}}
+.rail i::before,.rail i::after{{content:"";position:absolute;top:-3px;width:8px;height:8px;border:2px solid var(--direction);border-radius:50%;background:var(--surface)}}
 .rail i::before{{left:0}}.rail i::after{{right:0}}
-.rail b{{position:relative;z-index:1;padding:1px 7px;background:var(--surface);font:700 11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}}
-tr:hover .rail b,tr:hover .rail i::before,tr:hover .rail i::after{{background:var(--surface-hover)}}
+.rail b{{position:relative;z-index:1;display:grid;place-items:center;width:24px;height:24px;border:1px solid var(--direction);border-radius:4px;background:var(--direction-soft);font:800 16px/1 system-ui,-apple-system,"Segoe UI",sans-serif}}
+tr:hover .rail i::before,tr:hover .rail i::after{{background:var(--surface-hover)}}
 .health-cell{{width:170px}}.health-detail{{display:block;max-width:260px;margin-top:4px;color:var(--tertiary);font-size:11px;overflow-wrap:anywhere}}
 .action{{width:112px;text-align:right}}
 .open{{display:inline-flex;align-items:center;min-height:32px;padding:6px 10px;border:1px solid var(--line-strong);border-radius:4px;color:var(--blue);background:var(--surface);font-size:12px;font-weight:720;text-decoration:none;white-space:nowrap;transition:color 140ms ease,background-color 140ms ease,border-color 140ms ease}}
 .open:hover{{border-color:var(--blue);color:var(--surface);background:var(--blue)}}.open:focus-visible{{outline:2px solid var(--blue);outline-offset:2px}}
 .empty{{padding:72px 24px;text-align:center;color:var(--tertiary)}}.empty strong{{display:block;margin-top:14px;color:var(--secondary);font-size:13px}}
 .empty-route{{display:flex;align-items:center;justify-content:center;width:132px;margin:0 auto}}.empty-route i{{width:9px;height:9px;border:2px solid var(--muted);border-radius:50%}}.empty-route span{{width:96px;height:1px;background:var(--line-strong)}}
-@media(prefers-color-scheme:dark){{:root{{--canvas:#111614;--surface:#171d1a;--surface-hover:#1b221f;--ink:#e7ece9;--secondary:#b4bfba;--tertiary:#84918b;--muted:#66736d;--line:rgba(231,236,233,.13);--line-soft:rgba(231,236,233,.08);--line-strong:rgba(231,236,233,.22);--green:#58b98a;--green-soft:#173b2a;--amber:#d8a847;--amber-soft:#3d3016;--red:#df7b71;--red-soft:#40201e;--blue:#70acd4;--blue-soft:#193247}}}}
+@media(prefers-color-scheme:dark){{:root{{--canvas:#111614;--surface:#171d1a;--surface-hover:#1b221f;--ink:#e7ece9;--secondary:#b4bfba;--tertiary:#84918b;--muted:#66736d;--line:rgba(231,236,233,.13);--line-soft:rgba(231,236,233,.08);--line-strong:rgba(231,236,233,.22);--green:#58b98a;--green-soft:#173b2a;--amber:#d8a847;--amber-soft:#3d3016;--red:#df7b71;--red-soft:#40201e;--blue:#70acd4;--blue-soft:#193247;--inbound:#d68ab8;--inbound-soft:#3d2032}}}}
 @media(max-width:760px){{.frame{{width:calc(100% - 24px);padding:24px 0 40px}}.topbar{{align-items:flex-start;flex-direction:column;gap:20px;padding-bottom:20px}}.overview{{width:100%;max-width:100%;justify-content:space-between}}.divider{{margin-left:auto}}.section-heading{{margin-top:24px}}table,tbody{{display:block;width:100%}}thead{{display:none}}tbody tr{{display:grid;width:100%;min-width:0;grid-template-columns:minmax(0,1fr) auto;padding:16px 14px;border-bottom:1px solid var(--line-soft)}}td{{display:block;min-width:0;padding:4px 0;border:0}}td::before{{content:attr(data-label);display:block;margin-bottom:3px;color:var(--muted);font-size:9px;font-weight:750;text-transform:uppercase}}.channel{{width:auto}}.route-cell,.health-cell{{grid-column:1/-1;width:auto;margin-top:12px}}.route{{grid-template-columns:minmax(0,1fr) 54px minmax(0,1fr);gap:6px}}.rail b{{padding:1px 4px}}.action{{grid-column:2;grid-row:1;width:auto;padding-left:10px;align-self:start}}.health-detail{{max-width:none}}}}
 </style>
 </head>
-<body><main class="frame"><header class="topbar"><div class="brand"><span class="mark" aria-hidden="true"><i></i></span><div><p class="kicker">SSH Channels Hub</p><h1>Channel routes</h1></div></div><div class="overview"><div class="service"><span class="health {state_class}"><i></i>{state}</span><span class="service-label">Service</span></div><span class="divider" aria-hidden="true"></span><div class="coverage"><span><strong>{connected}</strong><em> / {total}</em></span><small>Connected</small><span class="coverage-bar" style="width:{coverage}%"></span></div></div></header><div class="section-heading"><div><p>Route ledger</p><h2>Forwarded channels</h2></div><span class="count">{total} total</span></div><section class="panel" aria-label="Channel status"><table><thead><tr><th>Channel</th><th>Local / remote route</th><th>Health</th><th></th></tr></thead><tbody>{rows}</tbody></table></section></main></body>
+<body><main class="frame"><header class="topbar"><div class="brand"><span class="mark" aria-hidden="true"><i></i></span><div><p class="kicker">SSH Channels Hub</p><h1>Channel routes</h1></div></div><div class="overview"><div class="service"><span class="health {state_class}"><i></i>{state}</span><span class="service-label">Service</span></div><span class="divider" aria-hidden="true"></span><div class="coverage"><span><strong>{connected}</strong><em> / {total}</em></span><small>Connected</small><span class="coverage-bar" style="width:{coverage}%"></span></div></div></header><div class="section-heading"><div><p>Route ledger</p><h2>Forwarded channels</h2></div><div class="section-meta"><span class="refresh" title="Auto refresh every 3 seconds"><i aria-hidden="true">↻</i> 3s</span><span class="count">{total} total</span></div></div><section class="panel" aria-label="Channel status"><table><thead><tr><th>Channel</th><th>Local / remote route</th><th>Health</th><th></th></tr></thead><tbody>{rows}</tbody></table></section></main></body>
 </html>"#,
   )
 }
@@ -330,7 +340,13 @@ mod tests {
     assert!(page.contains("href=\"http://127.0.0.1:3000\""));
     assert!(!page.contains("href=\"http://127.0.0.1:9000\""));
     assert_eq!(page.matches("class=\"open\"").count(), 2);
+    assert!(page.contains("class=\"direction outbound\""));
+    assert!(page.contains("<b>Outbound</b><code>SSH -L</code>"));
+    assert!(page.contains("class=\"direction inbound\""));
+    assert!(page.contains("<b>Inbound</b><code>SSH -R</code>"));
     assert!(page.contains("class=\"rail inbound\""));
+    assert!(page.contains("http-equiv=\"refresh\" content=\"3\""));
+    assert!(page.contains("title=\"Auto refresh every 3 seconds\""));
     assert!(page.contains("bad &lt;key&gt;"));
   }
 

@@ -140,6 +140,37 @@ pub fn kv_dim(key: &str, value: impl std::fmt::Display) {
   );
 }
 
+/// Highlight the local Web dashboard URL as a distinct startup section.
+pub fn web_address(url: impl AsRef<str>) {
+  header("🌐", "Web dashboard");
+  let label = format!("{:<14}", "URL:");
+  let url_style = cyan_bold().underline();
+  println!(
+    "  {} {}",
+    label.if_supports_color(Stdout, |text| text.style(bold())),
+    url
+      .as_ref()
+      .if_supports_color(Stdout, |text| text.style(url_style))
+  );
+}
+
+/// Show the commands used to manage a detached service.
+pub fn daemon_commands() {
+  header("🛠", "Daemon commands");
+  for (label, command) in [
+    ("Status", "ssh-channels-hub status"),
+    ("Restart", "ssh-channels-hub restart"),
+    ("Stop", "ssh-channels-hub stop"),
+  ] {
+    let label = format!("{:<14}", format!("{}:", label));
+    println!(
+      "  {} {}",
+      label.if_supports_color(Stdout, |text| text.style(bold())),
+      command.if_supports_color(Stdout, |text| text.style(cyan_bold()))
+    );
+  }
+}
+
 // ---------- Service state ----------
 
 /// Colored badge for a `ServiceState`.
