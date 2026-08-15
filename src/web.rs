@@ -14,6 +14,7 @@ use tracing::{debug, info, warn};
 const WEB_HOST: &str = "127.0.0.1";
 const MAX_WEB_CONNECTIONS: usize = 64;
 const WEB_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
+const WEB_REFRESH_SECONDS: u64 = 30;
 
 /// Start the loopback Web status server and return its actual bound port.
 pub async fn start(
@@ -242,7 +243,7 @@ fn render(status: &ServiceStatus) -> String {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="3">
+<meta http-equiv="refresh" content="{WEB_REFRESH_SECONDS}">
 <title>SSH Channels Hub</title>
 <style>
 :root{{--canvas:#f2f4f3;--surface:#fbfcfb;--surface-hover:#f7f9f8;--ink:#17201d;--secondary:#53605b;--tertiary:#75807c;--muted:#919a96;--line:rgba(23,32,29,.12);--line-soft:rgba(23,32,29,.07);--line-strong:rgba(23,32,29,.2);--green:#14734a;--green-soft:#e4f3eb;--amber:#8a5b08;--amber-soft:#fff2d5;--red:#a33b32;--red-soft:#fbe9e7;--blue:#215f8d;--blue-soft:#e8f1f7;--inbound:#8b3f74;--inbound-soft:#f6e9f1}}
@@ -300,7 +301,7 @@ tr:hover .rail i::before,tr:hover .rail i::after{{background:var(--surface-hover
 @media(max-width:760px){{.frame{{width:calc(100% - 24px);padding:24px 0 40px}}.topbar{{align-items:flex-start;flex-direction:column;gap:20px;padding-bottom:20px}}.overview{{width:100%;max-width:100%;justify-content:space-between}}.divider{{margin-left:auto}}.section-heading{{margin-top:24px}}table,tbody{{display:block;width:100%}}thead{{display:none}}tbody tr{{display:grid;width:100%;min-width:0;grid-template-columns:minmax(0,1fr) auto;padding:16px 14px;border-bottom:1px solid var(--line-soft)}}td{{display:block;min-width:0;padding:4px 0;border:0}}td::before{{content:attr(data-label);display:block;margin-bottom:3px;color:var(--muted);font-size:9px;font-weight:750;text-transform:uppercase}}.channel{{width:auto}}.route-cell,.health-cell{{grid-column:1/-1;width:auto;margin-top:12px}}.route{{grid-template-columns:minmax(0,1fr) 54px minmax(0,1fr);gap:6px}}.rail b{{padding:1px 4px}}.action{{grid-column:2;grid-row:1;width:auto;padding-left:10px;align-self:start}}.health-detail{{max-width:none}}}}
 </style>
 </head>
-<body><main class="frame"><header class="topbar"><div class="brand"><span class="mark" aria-hidden="true"><i></i></span><div><p class="kicker">SSH Channels Hub</p><h1>Channel routes</h1></div></div><div class="overview"><div class="service"><span class="health {state_class}"><i></i>{state}</span><span class="service-label">Service</span></div><span class="divider" aria-hidden="true"></span><div class="coverage"><span><strong>{connected}</strong><em> / {total}</em></span><small>Connected</small><span class="coverage-bar" style="width:{coverage}%"></span></div></div></header><div class="section-heading"><div><p>Route ledger</p><h2>Forwarded channels</h2></div><div class="section-meta"><span class="refresh" title="Auto refresh every 3 seconds"><i aria-hidden="true">↻</i> 3s</span><span class="count">{total} total</span></div></div><section class="panel" aria-label="Channel status"><table><thead><tr><th>Channel</th><th>Local / remote route</th><th>Health</th><th></th></tr></thead><tbody>{rows}</tbody></table></section></main></body>
+<body><main class="frame"><header class="topbar"><div class="brand"><span class="mark" aria-hidden="true"><i></i></span><div><p class="kicker">SSH Channels Hub</p><h1>Channel routes</h1></div></div><div class="overview"><div class="service"><span class="health {state_class}"><i></i>{state}</span><span class="service-label">Service</span></div><span class="divider" aria-hidden="true"></span><div class="coverage"><span><strong>{connected}</strong><em> / {total}</em></span><small>Connected</small><span class="coverage-bar" style="width:{coverage}%"></span></div></div></header><div class="section-heading"><div><p>Route ledger</p><h2>Forwarded channels</h2></div><div class="section-meta"><span class="refresh" title="Auto refresh every {WEB_REFRESH_SECONDS} seconds"><i aria-hidden="true">↻</i> {WEB_REFRESH_SECONDS}s</span><span class="count">{total} total</span></div></div><section class="panel" aria-label="Channel status"><table><thead><tr><th>Channel</th><th>Local / remote route</th><th>Health</th><th></th></tr></thead><tbody>{rows}</tbody></table></section></main></body>
 </html>"#,
   )
 }
@@ -345,8 +346,8 @@ mod tests {
     assert!(page.contains("class=\"direction inbound\""));
     assert!(page.contains("<b>Inbound</b><code>SSH -R</code>"));
     assert!(page.contains("class=\"rail inbound\""));
-    assert!(page.contains("http-equiv=\"refresh\" content=\"3\""));
-    assert!(page.contains("title=\"Auto refresh every 3 seconds\""));
+    assert!(page.contains("http-equiv=\"refresh\" content=\"30\""));
+    assert!(page.contains("title=\"Auto refresh every 30 seconds\""));
     assert!(page.contains("bad &lt;key&gt;"));
   }
 
