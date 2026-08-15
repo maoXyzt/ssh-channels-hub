@@ -114,6 +114,24 @@ Endpoints accept:
 - `"0.0.0.0:8080"` → bind on every interface
 - `"[::1]:3306"` → IPv6
 
+### Web status page
+
+Starting the service also serves a live channel dashboard on loopback. It shows
+the service summary, each channel's direction, local and remote endpoints,
+health, retry attempt, and latest error. The actual URL is printed for both
+foreground and daemon startup.
+
+Every channel has an **Open local** link built from its `local` endpoint. This
+also applies to `remote->local` channels: the link opens the local service being
+exposed, never the remote bind address.
+
+```toml
+[web]
+enabled = true   # default: true; set false to disable
+port = 9090      # default: 9090; preferred port
+strict = false   # default: false; if occupied, try 9091, 9092, ...
+```
+
 ### Credentials
 
 `~/.ssh/config` can't hold passwords or key passphrases. When SSH config alone can't authenticate the host, add an `[auth.<alias>]` block keyed by the SSH config alias:

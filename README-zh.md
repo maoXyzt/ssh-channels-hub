@@ -114,6 +114,22 @@ Endpoint 接受这些写法:
 - `"0.0.0.0:8080"` → 监听所有网卡
 - `"[::1]:3306"` → IPv6
 
+### Web 状态页
+
+服务启动后会在 loopback 地址提供实时 channel 控制台，展示服务摘要、每条
+channel 的方向、local / remote 端点、健康状态、重试次数和最近错误。前台和
+daemon 启动都会打印实际 URL。
+
+每条 channel 都有基于 `local` 端点生成的 **Open local** 链接，包括
+`remote->local`：链接打开的是被暴露的本地服务，不会使用远端监听地址。
+
+```toml
+[web]
+enabled = true   # default: true；设为 false 可关闭
+port = 9090      # default: 9090；首选端口
+strict = false   # default: false；占用时依次尝试 9091、9092……
+```
+
 ### 凭证
 
 `~/.ssh/config` 存不了密码或 key passphrase。SSH config 本身无法完成认证时,加 `[auth.<alias>]` 块(按 SSH config 里的 alias 作 key):

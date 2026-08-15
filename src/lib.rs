@@ -7,3 +7,4 @@ pub mod service;
 pub mod ssh;
 pub mod ssh_config;
 pub mod ui;
+pub mod web;

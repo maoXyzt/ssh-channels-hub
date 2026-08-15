@@ -7,6 +7,7 @@ mod service;
 mod ssh;
 mod ssh_config;
 mod ui;
+mod web;
 
 use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
 use clap::Parser;
@@ -79,6 +80,12 @@ async fn main() -> AnyhowResult<()> {
 
 /// Spawn a detached child process that runs the service (foreground mode). Parent exits immediately.
 async fn spawn_daemon(config_path: &Path, debug: bool) -> AnyhowResult<()> {
+  let web_enabled = AppConfig::from_file(config_path)
+    .map(|config| config.web.enabled)
+    .unwrap_or(false);
+  if web_enabled {
+    let _ = std::fs::remove_file(web_port_file_path(config_path));
+  }
   let exe = std::env::current_exe().context("Get current executable")?;
   let mut cmd = Command::new(&exe);
   cmd
@@ -103,6 +110,12 @@ async fn spawn_daemon(config_path: &Path, debug: bool) -> AnyhowResult<()> {
 
   tokio::time::sleep(Duration::from_millis(800)).await;
   ui::success("Service started in daemon mode");
+  if web_enabled {
+    match wait_for_web_port(config_path).await {
+      Ok(port) => ui::info(format!("Web status: http://127.0.0.1:{}", port)),
+      Err(error) => ui::warn(format!("Web status address unavailable: {}", error)),
+    }
+  }
   ui::hint("Run `ssh-channels-hub status` to inspect the live state.");
   Ok(())
 }
@@ -143,6 +156,7 @@ async fn handle_start(
 
   info!("Configuration loaded successfully");
 
+  let web_config = config.web.clone();
   let service_manager = Arc::new(ServiceManager::new(config));
 
   // Start the service
@@ -151,8 +165,18 @@ async fn handle_start(
     .await
     .context("Failed to start service")?;
 
-  // Start IPC listener so "status" command can query this process
   let cancel = CancellationToken::new();
+  let web_port = if web_config.enabled {
+    Some(
+      web::start(&web_config, Arc::clone(&service_manager), cancel.clone())
+        .await
+        .context("Failed to start Web status page")?,
+    )
+  } else {
+    None
+  };
+
+  // Start IPC listener so "status" command can query this process
   let port = start_ipc_listener(&config_path, Arc::clone(&service_manager), cancel.clone())
     .await
     .context("Failed to start IPC listener for status queries")?;
@@ -161,6 +185,13 @@ async fn handle_start(
     "Status query listener on 127.0.0.1:{} (status command will connect here)",
     port
   );
+
+  if let Some(web_port) = web_port {
+    write_web_port(&web_port_file_path(&config_path), web_port).context("Write Web port file")?;
+    ui::info(format!("Web status: http://127.0.0.1:{}", web_port));
+  } else {
+    let _ = std::fs::remove_file(web_port_file_path(&config_path));
+  }
 
   println!();
   ui::info("Service running in foreground. Press Ctrl+C to stop.");
@@ -201,6 +232,10 @@ fn port_file_path(config_path: &Path) -> PathBuf {
   run_dir(config_path).join("ssh-channels-hub.port")
 }
 
+fn web_port_file_path(config_path: &Path) -> PathBuf {
+  run_dir(config_path).join("ssh-channels-hub.web.port")
+}
+
 /// Write PID file (plain text, one number) - standard for Linux daemons.
 fn write_pid_file(path: &Path) -> AnyhowResult<()> {
   let pid = std::process::id();
@@ -214,8 +249,35 @@ fn write_port_file(path: &Path, port: u16) -> AnyhowResult<()> {
   Ok(())
 }
 
+fn write_web_port(path: &Path, port: u16) -> AnyhowResult<()> {
+  std::fs::write(path, port.to_string()).context("Write Web port file")?;
+  Ok(())
+}
+
+fn read_web_port(config_path: &Path) -> AnyhowResult<u16> {
+  std::fs::read_to_string(web_port_file_path(config_path))
+    .context("Read Web port file")?
+    .trim()
+    .parse()
+    .context("Parse Web port file")
+}
+
+async fn wait_for_web_port(config_path: &Path) -> AnyhowResult<u16> {
+  for _ in 0..20 {
+    if let Ok(port) = read_web_port(config_path) {
+      return Ok(port);
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+  }
+  read_web_port(config_path)
+}
+
 fn remove_run_files(config_path: &Path) -> AnyhowResult<()> {
-  for path in [pid_file_path(config_path), port_file_path(config_path)] {
+  for path in [
+    pid_file_path(config_path),
+    port_file_path(config_path),
+    web_port_file_path(config_path),
+  ] {
     if path.exists() {
       let _ = std::fs::remove_file(&path);
     }
