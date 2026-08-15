@@ -161,6 +161,8 @@ pub struct ConnectionConfig {
 pub struct ChannelConfig {
   /// Channel name/identifier
   pub name: String,
+  /// SSH config Host alias used by this channel.
+  pub hostname: String,
   /// Remote host address (resolved from SSH config HostName)
   pub host: String,
   /// SSH port (resolved from SSH config Port, default 22)
@@ -247,6 +249,7 @@ pub struct AuthOverride {
 /// - which channels to bring up (`[[channels]]`, referencing SSH config aliases)
 /// - per-host credentials SSH config can't hold (`[auth.<alias>]`)
 /// - reconnection policy
+/// - local Web status page settings
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
   /// Optional override for the SSH config file path. None → `~/.ssh/config`.
@@ -262,6 +265,23 @@ pub struct AppConfig {
   /// Reconnection settings
   #[serde(default)]
   pub reconnection: ReconnectionConfig,
+  /// Local Web status page settings
+  #[serde(default)]
+  pub web: WebConfig,
+}
+
+/// Local Web status page configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConfig {
+  /// Serve the status page after startup.
+  #[serde(default = "default_web_enabled")]
+  pub enabled: bool,
+  /// Preferred loopback port.
+  #[serde(default = "default_web_port")]
+  pub port: u16,
+  /// Fail when `port` is occupied instead of trying subsequent ports.
+  #[serde(default)]
+  pub strict: bool,
 }
 
 /// Reconnection configuration
@@ -295,6 +315,24 @@ fn default_max_delay() -> u64 {
 
 fn default_use_exponential() -> bool {
   true
+}
+
+fn default_web_enabled() -> bool {
+  true
+}
+
+fn default_web_port() -> u16 {
+  9090
+}
+
+impl Default for WebConfig {
+  fn default() -> Self {
+    Self {
+      enabled: default_web_enabled(),
+      port: default_web_port(),
+      strict: false,
+    }
+  }
 }
 
 impl Default for ReconnectionConfig {
@@ -460,6 +498,7 @@ impl AppConfig {
 
       channels.push(ChannelConfig {
         name: conn.name.clone(),
+        hostname: conn.hostname.clone(),
         host,
         port,
         username,
@@ -528,6 +567,11 @@ impl AppConfig {
     out.push_str("initial_delay_secs = 1\n");
     out.push_str("max_delay_secs = 30\n");
     out.push_str("use_exponential_backoff = true\n");
+    out.push_str("\n# --- Local Web status page ---\n");
+    out.push_str("[web]\n");
+    out.push_str("enabled = true\n");
+    out.push_str("port = 9090\n");
+    out.push_str("strict = false\n");
 
     out
   }
@@ -774,6 +818,30 @@ fn resolve_auth(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn web_defaults_to_enabled_with_flexible_port() {
+    let config: AppConfig = toml::from_str("").unwrap();
+    assert!(config.web.enabled);
+    assert_eq!(config.web.port, 9090);
+    assert!(!config.web.strict);
+  }
+
+  #[test]
+  fn web_can_be_disabled_or_made_strict() {
+    let config: AppConfig = toml::from_str(
+      r#"
+[web]
+enabled = false
+port = 8000
+strict = true
+"#,
+    )
+    .unwrap();
+    assert!(!config.web.enabled);
+    assert_eq!(config.web.port, 8000);
+    assert!(config.web.strict);
+  }
 
   #[test]
   fn endpoint_parses_bare_port() {
@@ -1238,6 +1306,7 @@ mod tests {
   fn make_channel(name: &str, proxy_jumps: Vec<JumpHopConfig>) -> ChannelConfig {
     ChannelConfig {
       name: name.to_string(),
+      hostname: "target".to_string(),
       host: "target.example.com".to_string(),
       port: 22,
       username: "u".to_string(),

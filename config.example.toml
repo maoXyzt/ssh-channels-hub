@@ -5,6 +5,7 @@
 #   - which channels to bring up
 #   - per-host credentials SSH config can't hold (password / passphrase)
 #   - reconnection policy
+#   - local Web status page settings
 #
 # Optional: point at a non-default SSH config path.
 # ssh_config = "~/.ssh/config"
@@ -15,6 +16,12 @@ max_retries = 0                       # 0 = unlimited
 initial_delay_secs = 1
 max_delay_secs = 30
 use_exponential_backoff = true
+
+# --- Local Web status page (documented defaults) ---
+# [web]
+# enabled = true
+# port = 9090
+# strict = false                        # try subsequent ports when occupied
 
 # --- Per-host credential overrides (optional) ---
 # Only needed when SSH config alone can't authenticate (password-auth host,

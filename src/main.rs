@@ -7,6 +7,7 @@ mod service;
 mod ssh;
 mod ssh_config;
 mod ui;
+mod web;
 
 use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
 use clap::Parser;
@@ -79,6 +80,11 @@ async fn main() -> AnyhowResult<()> {
 
 /// Spawn a detached child process that runs the service (foreground mode). Parent exits immediately.
 async fn spawn_daemon(config_path: &Path, debug: bool) -> AnyhowResult<()> {
+  let config = AppConfig::from_file(config_path).context("Failed to load configuration")?;
+  let web_enabled = config.web.enabled;
+  if web_enabled {
+    let _ = std::fs::remove_file(web_port_file_path(config_path));
+  }
   let exe = std::env::current_exe().context("Get current executable")?;
   let mut cmd = Command::new(&exe);
   cmd
@@ -103,7 +109,13 @@ async fn spawn_daemon(config_path: &Path, debug: bool) -> AnyhowResult<()> {
 
   tokio::time::sleep(Duration::from_millis(800)).await;
   ui::success("Service started in daemon mode");
-  ui::hint("Run `ssh-channels-hub status` to inspect the live state.");
+  if web_enabled {
+    match wait_for_web_port(config_path).await {
+      Ok(port) => ui::web_address(format!("http://127.0.0.1:{}", port)),
+      Err(error) => ui::warn(format!("Web status address unavailable: {}", error)),
+    }
+  }
+  ui::daemon_commands();
   Ok(())
 }
 
@@ -138,11 +150,13 @@ async fn handle_start(
   ui::kv_dim("Config", config_path.display());
 
   let config = AppConfig::from_file(&config_path).context("Failed to load configuration")?;
+  let ssh_config_path = config.ssh_config_path();
   ui::kv("Channels", config.channels.len());
-  ui::kv_dim("SSH config", config.ssh_config_path().display());
+  ui::kv_dim("SSH config", ssh_config_path.display());
 
   info!("Configuration loaded successfully");
 
+  let web_config = config.web.clone();
   let service_manager = Arc::new(ServiceManager::new(config));
 
   // Start the service
@@ -151,8 +165,24 @@ async fn handle_start(
     .await
     .context("Failed to start service")?;
 
-  // Start IPC listener so "status" command can query this process
   let cancel = CancellationToken::new();
+  let web_port = if web_config.enabled {
+    Some(
+      web::start(
+        &web_config,
+        Arc::clone(&service_manager),
+        cancel.clone(),
+        &config_path,
+        &ssh_config_path,
+      )
+      .await
+      .context("Failed to start Web status page")?,
+    )
+  } else {
+    None
+  };
+
+  // Start IPC listener so "status" command can query this process
   let port = start_ipc_listener(&config_path, Arc::clone(&service_manager), cancel.clone())
     .await
     .context("Failed to start IPC listener for status queries")?;
@@ -162,8 +192,16 @@ async fn handle_start(
     port
   );
 
+  if let Some(web_port) = web_port {
+    write_web_port(&web_port_file_path(&config_path), web_port).context("Write Web port file")?;
+    ui::web_address(format!("http://127.0.0.1:{}", web_port));
+  } else {
+    let _ = std::fs::remove_file(web_port_file_path(&config_path));
+  }
+
   println!();
   ui::info("Service running in foreground. Press Ctrl+C to stop.");
+  ui::hint("Use `ssh-channels-hub start -D` to run in daemon mode.");
 
   tokio::select! {
       _ = tokio::signal::ctrl_c() => {}
@@ -201,6 +239,10 @@ fn port_file_path(config_path: &Path) -> PathBuf {
   run_dir(config_path).join("ssh-channels-hub.port")
 }
 
+fn web_port_file_path(config_path: &Path) -> PathBuf {
+  run_dir(config_path).join("ssh-channels-hub.web.port")
+}
+
 /// Write PID file (plain text, one number) - standard for Linux daemons.
 fn write_pid_file(path: &Path) -> AnyhowResult<()> {
   let pid = std::process::id();
@@ -214,8 +256,35 @@ fn write_port_file(path: &Path, port: u16) -> AnyhowResult<()> {
   Ok(())
 }
 
+fn write_web_port(path: &Path, port: u16) -> AnyhowResult<()> {
+  std::fs::write(path, port.to_string()).context("Write Web port file")?;
+  Ok(())
+}
+
+fn read_web_port(config_path: &Path) -> AnyhowResult<u16> {
+  std::fs::read_to_string(web_port_file_path(config_path))
+    .context("Read Web port file")?
+    .trim()
+    .parse()
+    .context("Parse Web port file")
+}
+
+async fn wait_for_web_port(config_path: &Path) -> AnyhowResult<u16> {
+  for _ in 0..20 {
+    if let Ok(port) = read_web_port(config_path) {
+      return Ok(port);
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+  }
+  read_web_port(config_path)
+}
+
 fn remove_run_files(config_path: &Path) -> AnyhowResult<()> {
-  for path in [pid_file_path(config_path), port_file_path(config_path)] {
+  for path in [
+    pid_file_path(config_path),
+    port_file_path(config_path),
+    web_port_file_path(config_path),
+  ] {
     if path.exists() {
       let _ = std::fs::remove_file(&path);
     }
@@ -236,6 +305,8 @@ struct ServiceStatusWire {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ChannelStatusWire {
   name: String,
+  #[serde(default)]
+  hostname: String,
   direction: String, // "local->remote" / "remote->local"
   local: String,
   remote: String,
@@ -269,6 +340,7 @@ fn channel_status_to_wire(c: &service::ChannelStatus) -> ChannelStatusWire {
   };
   ChannelStatusWire {
     name: c.name.clone(),
+    hostname: c.hostname.clone(),
     direction: c.direction.as_arrow().to_string(),
     local: c.local.clone(),
     remote: c.remote.clone(),
@@ -300,6 +372,7 @@ fn wire_to_channel_status(w: ChannelStatusWire) -> AnyhowResult<service::Channel
   };
   Ok(service::ChannelStatus {
     name: w.name,
+    hostname: w.hostname,
     direction,
     local: w.local,
     remote: w.remote,
@@ -590,6 +663,7 @@ async fn render_status_once(config_path: &Path) -> StatusFrame {
         .iter()
         .map(|c| service::ChannelStatus {
           name: c.name.clone(),
+          hostname: c.hostname.clone(),
           direction: c.direction,
           local: format!("{}:{}", c.local.host, c.local.port),
           remote: format!("{}:{}", c.remote.host, c.remote.port),
@@ -1014,6 +1088,7 @@ mod tests {
   fn ch(name: &str, health: ChannelHealth) -> ChannelStatus {
     ChannelStatus {
       name: name.to_string(),
+      hostname: "db-server".to_string(),
       direction: Direction::LocalToRemote,
       local: "127.0.0.1:3306".to_string(),
       remote: "db.internal:3306".to_string(),
@@ -1037,6 +1112,7 @@ mod tests {
     assert_eq!(r.channels.len(), 1);
     assert!(matches!(r.channels[0].health, ChannelHealth::Connected));
     assert_eq!(r.channels[0].name, "db");
+    assert_eq!(r.channels[0].hostname, "db-server");
     assert_eq!(r.channels[0].direction, Direction::LocalToRemote);
   }
 
@@ -1196,6 +1272,7 @@ health = "Connected"
 "#;
     let r = parse_status_toml(minimal).expect("minimal channel parses");
     assert_eq!(r.channels.len(), 1);
+    assert!(r.channels[0].hostname.is_empty());
     assert!(matches!(r.channels[0].health, ChannelHealth::Connected));
   }
 }

@@ -1,6 +1,6 @@
 # 配置文档
 
-SSH Channels Hub 把 host 信息(`HostName` / `User` / `Port` / `IdentityFile`)托管给 `~/.ssh/config`。`config.toml` 只保留 channels 定义、可选的密码 / passphrase 覆盖、以及重连策略。
+SSH Channels Hub 把 host 信息(`HostName` / `User` / `Port` / `IdentityFile`)托管给 `~/.ssh/config`。`config.toml` 只保留 channels 定义、可选的密码 / passphrase 覆盖、重连策略和 Web 状态页设置。
 
 ## 1. 配置文件位置
 
@@ -38,6 +38,12 @@ max_retries = 0
 initial_delay_secs = 1
 max_delay_secs = 30
 use_exponential_backoff = true
+
+# Web 状态页(以下均为默认值)
+[web]
+enabled = true
+port = 9090
+strict = false
 ```
 
 ## 3. 字段说明
@@ -50,6 +56,7 @@ use_exponential_backoff = true
 | `channels` | array | `[]` | channel 定义,见 §3.2 |
 | `auth` | table | `{}` | 按 alias 提供密码 / passphrase,见 §3.3 |
 | `reconnection` | table | 默认值 | 重连策略,见 §3.5 |
+| `web` | table | 默认值 | 本地 Web 状态页,见 §3.6 |
 
 ### 3.2 `[[channels]]`
 
@@ -128,6 +135,19 @@ key 是 SSH config 里的 alias 字符串。**没有覆盖需求的 host 不需�
 | `use_exponential_backoff` | bool | true | 指数退避(true) / 固定间隔(false) |
 
 每次普通重试都带 jitter。有限重试轮次耗尽后不会每秒重新开始,而是进入另一层带 jitter 的指数退避,上限为 60 秒,再启动新一轮。session 成功建立后连续失败次数和外层退避都会重置。进程内 SSH 握手会串行执行,避免多个连接同时冲击服务器。
+
+### 3.6 `[web]`
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `enabled` | bool | true | 是否启动 Web 状态页 |
+| `port` | u16 | 9090 | 首选监听端口 |
+| `strict` | bool | false | true 时端口占用即失败；false 时依次尝试后续端口 |
+
+状态页只监听 `127.0.0.1`。启动时 CLI 会打印最终 URL；若首选端口被占用且
+`strict = false`，打印的是实际顺延后绑定的端口。要关闭页面，必须显式设置
+`enabled = false`。页面展示每条 channel 的方向、local / remote 端点和实时健康
+状态；两种方向的 **Open local** 链接都基于 `local` 地址生成。
 
 ## 4. 示例
 
