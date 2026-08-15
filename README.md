@@ -37,6 +37,13 @@ ssh-channels-hub --help
 The wheel installs the same `ssh-channels-hub` binary on Linux x86_64,
 macOS arm64, and Windows x86_64; it does not run through Python.
 
+If you already have a Cargo toolchain, you can also install with:
+
+```bash
+cargo binstall ssh-channels-hub          # requires cargo-binstall; installs a prebuilt binary
+cargo install ssh-channels-hub --locked # build and install from source
+```
+
 For development, clone and build the source:
 
 ```bash
@@ -69,7 +76,7 @@ remote    = "3306"              # server connects to 127.0.0.1:3306
 
 ```bash
 uvx ssh-channels-hub start      # no installation
-# or, after pip install:
+# or, after pip/cargo installation:
 ssh-channels-hub start          # Ctrl+C to stop
 # or, after cargo build:
 ./target/release/ssh-channels-hub start       # Linux/macOS
@@ -162,7 +169,10 @@ serialized to avoid reconnect storms.
 
 ### More examples
 
-**Listen on every interface** so other LAN machines can use the tunnel (mind your firewall):
+#### Share the tunnel on the local network
+
+Listen on every interface so other LAN machines can use the tunnel (mind your
+firewall):
 
 ```toml
 [[channels]]
@@ -173,18 +183,23 @@ local     = "0.0.0.0:3306"
 remote    = "3306"
 ```
 
-**Expose a local service to the SSH server** (`ssh -R`):
+#### Expose a local-network service to the SSH server
+
+With `remote->local` (`ssh -R`), `local` can point to another service reachable
+from this machine instead of loopback:
 
 ```toml
 [[channels]]
-name      = "expose-local-web"
-hostname  = "jumpbox"
+name      = "lan-api"
+hostname  = "edge-server"
 direction = "remote->local"
-remote    = "8022"              # server binds 127.0.0.1:8022
-local     = "80"                # incoming traffic bridges to 127.0.0.1:80 here
+local     = "192.168.1.50:3000" # another service on the local network
+remote    = "8080"              # edge-server binds 127.0.0.1:8080
 ```
 
-(For the server to bind `0.0.0.0:8022`, set `remote = "0.0.0.0:8022"` **and** enable `GatewayPorts` in the server's `sshd_config`.)
+This exposes `192.168.1.50:3000` at `127.0.0.1:8080` on `edge-server`.
+
+(For the server to bind `0.0.0.0:8080`, set `remote = "0.0.0.0:8080"` **and** enable `GatewayPorts` in the server's `sshd_config`.)
 
 Full field reference: [docs/configuration.md](docs/configuration.md).
 

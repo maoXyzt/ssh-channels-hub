@@ -37,6 +37,13 @@ ssh-channels-hub --help
 wheel 会安装同一个 `ssh-channels-hub` 二进制,覆盖 Linux x86_64、
 macOS arm64 和 Windows x86_64;运行时不会经过 Python。
 
+如果已经有 Cargo 工具链,也可以使用以下方式安装:
+
+```bash
+cargo binstall ssh-channels-hub          # 需先安装 cargo-binstall;安装预编译二进制
+cargo install ssh-channels-hub --locked # 从源码编译并安装
+```
+
 开发时再下载源码构建:
 
 ```bash
@@ -69,7 +76,7 @@ remote    = "3306"              # 服务器连接其本网络里的 127.0.0.1:33
 
 ```bash
 uvx ssh-channels-hub start      # 无需安装
-# 或在 pip install 后:
+# 或在 pip/cargo 安装后:
 ssh-channels-hub start          # Ctrl+C 退出
 # 或在 cargo build 后:
 ./target/release/ssh-channels-hub start       # Linux/macOS
@@ -157,7 +164,9 @@ use_exponential_backoff = true
 
 ### 更多示例
 
-**监听所有网卡**,让局域网其它机器也能用这个隧道(注意防火墙):
+#### 与局域网其他设备共享隧道
+
+监听所有网卡,让局域网其他设备也能使用这个隧道(注意防火墙):
 
 ```toml
 [[channels]]
@@ -168,18 +177,25 @@ local     = "0.0.0.0:3306"
 remote    = "3306"
 ```
 
-**把本机服务暴露给 SSH 服务器**(`ssh -R`):
+#### 向 SSH 服务器暴露本地网络服务
+
+使用 `remote->local`(`ssh -R`)时,`local` 可以指向本机能够访问的其他服务,
+不必是 loopback 地址:
 
 ```toml
 [[channels]]
-name      = "expose-local-web"
-hostname  = "jumpbox"
+name      = "lan-api"
+hostname  = "edge-server"
 direction = "remote->local"
-remote    = "8022"              # 服务器在 127.0.0.1:8022 监听
-local     = "80"                # 收到的连接桥接到本机 127.0.0.1:80
+local     = "192.168.1.50:3000" # 本地网络中的其他服务
+remote    = "8080"              # edge-server 监听 127.0.0.1:8080
 ```
 
-(要让服务器在 `0.0.0.0:8022` 监听让外部可达,需要把 `remote` 改成 `"0.0.0.0:8022"` **并且**在服务器 `sshd_config` 里启用 `GatewayPorts`。)
+这样会把 `edge-server` 上的 `127.0.0.1:8080` 转发到
+`192.168.1.50:3000`。
+
+(要让服务器在 `0.0.0.0:8080` 监听以便外部访问,需要把 `remote` 改成
+`"0.0.0.0:8080"` **并且**在服务器 `sshd_config` 里启用 `GatewayPorts`。)
 
 完整字段说明:[docs/configuration.md](docs/configuration.md)。
 
