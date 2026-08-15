@@ -193,7 +193,7 @@ from this machine instead of loopback:
 name      = "lan-api"
 hostname  = "edge-server"
 direction = "remote->local"
-local     = "192.168.1.50:3000" # another service on the local network
+local     = "192.168.1.50:3000" # bare "3000" means 127.0.0.1:3000
 remote    = "8080"              # edge-server binds 127.0.0.1:8080
 ```
 

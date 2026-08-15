@@ -187,7 +187,7 @@ remote    = "3306"
 name      = "lan-api"
 hostname  = "edge-server"
 direction = "remote->local"
-local     = "192.168.1.50:3000" # 本地网络中的其他服务
+local     = "192.168.1.50:3000" # 只填 "3000" 则代表 127.0.0.1:3000
 remote    = "8080"              # edge-server 监听 127.0.0.1:8080
 ```
 
