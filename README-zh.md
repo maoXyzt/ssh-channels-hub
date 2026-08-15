@@ -195,7 +195,8 @@ remote    = "8080"              # edge-server 监听 127.0.0.1:8080
 `192.168.1.50:3000`。
 
 (要让服务器在 `0.0.0.0:8080` 监听以便外部访问,需要把 `remote` 改成
-`"0.0.0.0:8080"` **并且**在服务器 `sshd_config` 里启用 `GatewayPorts`。)
+`"0.0.0.0:8080"` **并且**在服务器 `sshd_config` 里设置
+`GatewayPorts clientspecified`。)
 
 完整字段说明:[docs/configuration.md](docs/configuration.md)。
 

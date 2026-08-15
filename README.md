@@ -199,7 +199,7 @@ remote    = "8080"              # edge-server binds 127.0.0.1:8080
 
 This exposes `192.168.1.50:3000` at `127.0.0.1:8080` on `edge-server`.
 
-(For the server to bind `0.0.0.0:8080`, set `remote = "0.0.0.0:8080"` **and** enable `GatewayPorts` in the server's `sshd_config`.)
+(For the server to bind `0.0.0.0:8080`, set `remote = "0.0.0.0:8080"` **and** set `GatewayPorts clientspecified` in the server's `sshd_config`.)
 
 Full field reference: [docs/configuration.md](docs/configuration.md).
 
