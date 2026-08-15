@@ -6,10 +6,14 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
+use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 const WEB_HOST: &str = "127.0.0.1";
+const MAX_WEB_CONNECTIONS: usize = 64;
+const WEB_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Start the loopback Web status server and return its actual bound port.
 pub async fn start(
@@ -18,6 +22,7 @@ pub async fn start(
   cancel: CancellationToken,
 ) -> Result<u16> {
   let (listener, port) = bind(config).await?;
+  let connections = Arc::new(Semaphore::new(MAX_WEB_CONNECTIONS));
 
   tokio::spawn(async move {
     loop {
@@ -25,12 +30,20 @@ pub async fn start(
         _ = cancel.cancelled() => break,
         accepted = listener.accept() => match accepted {
           Ok((stream, _)) => {
-            let manager = Arc::clone(&service_manager);
-            tokio::spawn(async move {
-              if let Err(error) = handle_connection(stream, manager).await {
-                debug!(error = ?error, "Web status connection failed");
+            match Arc::clone(&connections).try_acquire_owned() {
+              Ok(permit) => {
+                let manager = Arc::clone(&service_manager);
+                tokio::spawn(async move {
+                  let _permit = permit;
+                  match timeout(WEB_CONNECTION_TIMEOUT, handle_connection(stream, manager)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => debug!(error = ?error, "Web status connection failed"),
+                    Err(_) => debug!("Web status connection timed out"),
+                  }
+                });
               }
-            });
+              Err(_) => debug!("Web status connection limit reached"),
+            }
           }
           Err(error) => {
             warn!(error = ?error, "Web status listener stopped");

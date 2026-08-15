@@ -17,11 +17,11 @@ initial_delay_secs = 1
 max_delay_secs = 30
 use_exponential_backoff = true
 
-# --- Local Web status page (enabled by default) ---
-[web]
-enabled = true                          # default: true
-port = 9090                             # default: 9090
-strict = false                          # default: false; try subsequent ports when occupied
+# --- Local Web status page (documented defaults) ---
+# [web]
+# enabled = true
+# port = 9090
+# strict = false                        # try subsequent ports when occupied
 
 # --- Per-host credential overrides (optional) ---
 # Only needed when SSH config alone can't authenticate (password-auth host,

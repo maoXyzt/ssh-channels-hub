@@ -80,9 +80,8 @@ async fn main() -> AnyhowResult<()> {
 
 /// Spawn a detached child process that runs the service (foreground mode). Parent exits immediately.
 async fn spawn_daemon(config_path: &Path, debug: bool) -> AnyhowResult<()> {
-  let web_enabled = AppConfig::from_file(config_path)
-    .map(|config| config.web.enabled)
-    .unwrap_or(false);
+  let config = AppConfig::from_file(config_path).context("Failed to load configuration")?;
+  let web_enabled = config.web.enabled;
   if web_enabled {
     let _ = std::fs::remove_file(web_port_file_path(config_path));
   }
