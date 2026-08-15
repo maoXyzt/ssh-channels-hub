@@ -161,6 +161,8 @@ pub struct ConnectionConfig {
 pub struct ChannelConfig {
   /// Channel name/identifier
   pub name: String,
+  /// SSH config Host alias used by this channel.
+  pub hostname: String,
   /// Remote host address (resolved from SSH config HostName)
   pub host: String,
   /// SSH port (resolved from SSH config Port, default 22)
@@ -496,6 +498,7 @@ impl AppConfig {
 
       channels.push(ChannelConfig {
         name: conn.name.clone(),
+        hostname: conn.hostname.clone(),
         host,
         port,
         username,
@@ -1303,6 +1306,7 @@ strict = true
   fn make_channel(name: &str, proxy_jumps: Vec<JumpHopConfig>) -> ChannelConfig {
     ChannelConfig {
       name: name.to_string(),
+      hostname: "target".to_string(),
       host: "target.example.com".to_string(),
       port: 22,
       username: "u".to_string(),

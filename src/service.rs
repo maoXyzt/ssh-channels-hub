@@ -55,6 +55,7 @@ impl ChannelHealth {
 #[derive(Debug, Clone)]
 pub struct ChannelStatus {
   pub name: String,
+  pub hostname: String,
   pub direction: Direction,
   pub local: String,
   pub remote: String,
@@ -396,6 +397,7 @@ mod tests {
   fn channel(name: &str, host: &str, key: &str, local_port: u16) -> ChannelConfig {
     ChannelConfig {
       name: name.into(),
+      hostname: "server".into(),
       host: host.into(),
       port: 22,
       username: "alice".into(),

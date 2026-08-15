@@ -802,6 +802,7 @@ fn channel_status(config: &ChannelConfig, health: &Arc<StdMutex<ChannelHealth>>)
     .unwrap_or(ChannelHealth::Stopped);
   ChannelStatus {
     name: config.name.clone(),
+    hostname: config.hostname.clone(),
     direction,
     local,
     remote,

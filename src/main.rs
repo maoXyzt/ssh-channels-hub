@@ -150,8 +150,9 @@ async fn handle_start(
   ui::kv_dim("Config", config_path.display());
 
   let config = AppConfig::from_file(&config_path).context("Failed to load configuration")?;
+  let ssh_config_path = config.ssh_config_path();
   ui::kv("Channels", config.channels.len());
-  ui::kv_dim("SSH config", config.ssh_config_path().display());
+  ui::kv_dim("SSH config", ssh_config_path.display());
 
   info!("Configuration loaded successfully");
 
@@ -167,9 +168,15 @@ async fn handle_start(
   let cancel = CancellationToken::new();
   let web_port = if web_config.enabled {
     Some(
-      web::start(&web_config, Arc::clone(&service_manager), cancel.clone())
-        .await
-        .context("Failed to start Web status page")?,
+      web::start(
+        &web_config,
+        Arc::clone(&service_manager),
+        cancel.clone(),
+        &config_path,
+        &ssh_config_path,
+      )
+      .await
+      .context("Failed to start Web status page")?,
     )
   } else {
     None
@@ -298,6 +305,8 @@ struct ServiceStatusWire {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ChannelStatusWire {
   name: String,
+  #[serde(default)]
+  hostname: String,
   direction: String, // "local->remote" / "remote->local"
   local: String,
   remote: String,
@@ -331,6 +340,7 @@ fn channel_status_to_wire(c: &service::ChannelStatus) -> ChannelStatusWire {
   };
   ChannelStatusWire {
     name: c.name.clone(),
+    hostname: c.hostname.clone(),
     direction: c.direction.as_arrow().to_string(),
     local: c.local.clone(),
     remote: c.remote.clone(),
@@ -362,6 +372,7 @@ fn wire_to_channel_status(w: ChannelStatusWire) -> AnyhowResult<service::Channel
   };
   Ok(service::ChannelStatus {
     name: w.name,
+    hostname: w.hostname,
     direction,
     local: w.local,
     remote: w.remote,
@@ -652,6 +663,7 @@ async fn render_status_once(config_path: &Path) -> StatusFrame {
         .iter()
         .map(|c| service::ChannelStatus {
           name: c.name.clone(),
+          hostname: c.hostname.clone(),
           direction: c.direction,
           local: format!("{}:{}", c.local.host, c.local.port),
           remote: format!("{}:{}", c.remote.host, c.remote.port),
@@ -1076,6 +1088,7 @@ mod tests {
   fn ch(name: &str, health: ChannelHealth) -> ChannelStatus {
     ChannelStatus {
       name: name.to_string(),
+      hostname: "db-server".to_string(),
       direction: Direction::LocalToRemote,
       local: "127.0.0.1:3306".to_string(),
       remote: "db.internal:3306".to_string(),
@@ -1099,6 +1112,7 @@ mod tests {
     assert_eq!(r.channels.len(), 1);
     assert!(matches!(r.channels[0].health, ChannelHealth::Connected));
     assert_eq!(r.channels[0].name, "db");
+    assert_eq!(r.channels[0].hostname, "db-server");
     assert_eq!(r.channels[0].direction, Direction::LocalToRemote);
   }
 
@@ -1258,6 +1272,7 @@ health = "Connected"
 "#;
     let r = parse_status_toml(minimal).expect("minimal channel parses");
     assert_eq!(r.channels.len(), 1);
+    assert!(r.channels[0].hostname.is_empty());
     assert!(matches!(r.channels[0].health, ChannelHealth::Connected));
   }
 }

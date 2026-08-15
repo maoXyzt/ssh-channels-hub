@@ -3,6 +3,7 @@ use crate::error::{AppError, Result};
 use crate::service::{ChannelHealth, ServiceManager, ServiceState, ServiceStatus};
 use std::fmt::Write as _;
 use std::io::ErrorKind;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
@@ -15,15 +16,27 @@ const WEB_HOST: &str = "127.0.0.1";
 const MAX_WEB_CONNECTIONS: usize = 64;
 const WEB_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const WEB_REFRESH_SECONDS: u64 = 30;
+const REFRESH_SCRIPT: &str = r#"const refreshedAt=document.querySelector('[data-refreshed-at]');if(refreshedAt){const now=new Date();refreshedAt.dateTime=now.toISOString();refreshedAt.textContent=new Intl.DateTimeFormat([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(now);}"#;
+
+struct PageContext {
+  config_path: String,
+  ssh_config_path: String,
+}
 
 /// Start the loopback Web status server and return its actual bound port.
 pub async fn start(
   config: &WebConfig,
   service_manager: Arc<ServiceManager>,
   cancel: CancellationToken,
+  config_path: &Path,
+  ssh_config_path: &Path,
 ) -> Result<u16> {
   let (listener, port) = bind(config).await?;
   let connections = Arc::new(Semaphore::new(MAX_WEB_CONNECTIONS));
+  let page_context = Arc::new(PageContext {
+    config_path: config_path.display().to_string(),
+    ssh_config_path: ssh_config_path.display().to_string(),
+  });
 
   tokio::spawn(async move {
     loop {
@@ -34,9 +47,15 @@ pub async fn start(
             match Arc::clone(&connections).try_acquire_owned() {
               Ok(permit) => {
                 let manager = Arc::clone(&service_manager);
+                let page_context = Arc::clone(&page_context);
                 tokio::spawn(async move {
                   let _permit = permit;
-                  match timeout(WEB_CONNECTION_TIMEOUT, handle_connection(stream, manager)).await {
+                  match timeout(
+                    WEB_CONNECTION_TIMEOUT,
+                    handle_connection(stream, manager, page_context),
+                  )
+                  .await
+                  {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => debug!(error = ?error, "Web status connection failed"),
                     Err(_) => debug!("Web status connection timed out"),
@@ -89,6 +108,7 @@ async fn bind(config: &WebConfig) -> Result<(TcpListener, u16)> {
 async fn handle_connection(
   mut stream: TcpStream,
   service_manager: Arc<ServiceManager>,
+  page_context: Arc<PageContext>,
 ) -> std::io::Result<()> {
   let request_line = {
     let mut request_line = String::new();
@@ -99,18 +119,34 @@ async fn handle_connection(
     request_line
   };
 
-  let is_head = request_line.starts_with("HEAD / ");
-  if !is_head && !request_line.starts_with("GET / ") {
+  let mut request_parts = request_line.split_whitespace();
+  let method = request_parts.next().unwrap_or_default();
+  let path = request_parts.next().unwrap_or_default();
+  let is_head = method == "HEAD";
+  if method != "GET" && !is_head {
     stream
       .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
       .await?;
     return stream.shutdown().await;
   }
 
-  let body = render(&service_manager.status().await);
+  let (body, content_type) = match path {
+    "/" => (
+      render(&service_manager.status().await, &page_context),
+      "text/html; charset=utf-8",
+    ),
+    "/refresh.js" => (REFRESH_SCRIPT.to_string(), "text/javascript; charset=utf-8"),
+    _ => {
+      stream
+        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        .await?;
+      return stream.shutdown().await;
+    }
+  };
   let headers = format!(
-    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
-    body.len()
+    "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n",
+    content_type,
+    body.len(),
   );
   stream.write_all(headers.as_bytes()).await?;
   if !is_head {
@@ -167,7 +203,7 @@ fn health_view(health: &ChannelHealth) -> (&'static str, &'static str, Option<St
   }
 }
 
-fn render(status: &ServiceStatus) -> String {
+fn render(status: &ServiceStatus, page_context: &PageContext) -> String {
   let state = match status.state {
     ServiceState::Stopped => "Stopped",
     ServiceState::Starting => "Starting",
@@ -210,7 +246,7 @@ fn render(status: &ServiceStatus) -> String {
 
     let _ = write!(
       rows,
-      "<tr><td class=\"channel\" data-label=\"Channel\"><strong>{}</strong><span class=\"direction {}\"><i aria-hidden=\"true\">{}</i><b>{}</b><code>{}</code></span></td><td class=\"route-cell\" data-label=\"Route\"><div class=\"route {}\"><div class=\"endpoint local\"><span>Local</span><code>{}</code></div><div class=\"rail {}\" aria-label=\"{}\"><i></i><b aria-hidden=\"true\">{}</b></div><div class=\"endpoint remote\"><span>Remote</span><code>{}</code></div></div></td><td class=\"health-cell\" data-label=\"Health\"><span class=\"health {}\"><i></i>{}</span>{}</td><td class=\"action\">{}</td></tr>",
+      "<tr><td class=\"channel\" data-label=\"Channel\"><strong>{}</strong><span class=\"direction {}\"><i aria-hidden=\"true\">{}</i><b>{}</b><code>{}</code></span></td><td class=\"route-cell\" data-label=\"Route\"><div class=\"route {}\"><div class=\"endpoint local\"><span>Local</span><code>{}</code></div><div class=\"rail {}\" aria-label=\"{}\"><i></i><b aria-hidden=\"true\">{}</b></div><div class=\"endpoint remote\"><span>Remote</span><code>{}</code><small class=\"ssh-host\">SSH host <b>{}</b></small></div></div></td><td class=\"health-cell\" data-label=\"Health\"><span class=\"health {}\"><i></i>{}</span>{}</td><td class=\"action\">{}</td></tr>",
       escape_html(&channel.name),
       direction_class,
       direction_arrow,
@@ -222,6 +258,7 @@ fn render(status: &ServiceStatus) -> String {
       channel.direction.as_arrow(),
       direction_arrow,
       escape_html(&channel.remote),
+      escape_html(&channel.hostname),
       health_class,
       health,
       detail,
@@ -268,10 +305,11 @@ h1{{margin:1px 0 0;font-size:21px;line-height:1.25;font-weight:720;letter-spacin
 .health i{{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 0 3px color-mix(in srgb,currentColor 12%,transparent)}}
 .connected{{color:var(--green)}}.pending{{color:var(--amber)}}.failed{{color:var(--red)}}.stopped{{color:var(--muted)}}
 .coverage-bar{{position:absolute;left:0;bottom:0;height:2px;max-width:100%;border-radius:1px;background:var(--green)}}
+.config-context{{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;padding:16px 0;border-bottom:1px solid var(--line)}}.config-context div{{min-width:0}}.config-context span{{display:block;margin-bottom:3px;color:var(--muted);font-size:9px;font-weight:750;text-transform:uppercase}}.config-context code{{display:block;color:var(--tertiary);font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}}
 .section-heading{{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin:30px 0 12px}}
 .section-heading h2{{margin:2px 0 0;font-size:16px;line-height:1.3;letter-spacing:0}}
 .section-meta{{display:flex;align-items:center;gap:14px}}
-.refresh{{display:inline-flex;align-items:center;gap:4px;color:var(--tertiary);font:11px/1 ui-monospace,SFMono-Regular,Consolas,monospace}}.refresh i{{color:var(--blue);font:700 15px/1 system-ui,-apple-system,"Segoe UI",sans-serif}}
+.refresh{{display:inline-flex;align-items:center;gap:4px;color:var(--tertiary);font:11px/1 ui-monospace,SFMono-Regular,Consolas,monospace;text-decoration:none}}.refresh i{{color:var(--blue);font:700 15px/1 system-ui,-apple-system,"Segoe UI",sans-serif}}.refresh time::before{{content:"· Updated ";color:var(--muted)}}.refresh:hover{{color:var(--blue)}}.refresh:focus-visible{{outline:2px solid var(--blue);outline-offset:3px}}
 .count{{color:var(--tertiary);font-size:12px;font-variant-numeric:tabular-nums}}
 .panel{{overflow:hidden;background:var(--surface);border:1px solid var(--line);border-radius:6px}}
 table{{width:100%;border-collapse:collapse}}
@@ -284,6 +322,7 @@ tbody tr{{transition:background-color 140ms ease}}tbody tr:hover{{background:var
 .route-cell{{width:52%}}
 .route{{display:grid;grid-template-columns:minmax(110px,1fr) 92px minmax(110px,1fr);align-items:center;gap:10px}}
 .endpoint{{min-width:0}}.endpoint span{{display:block;margin-bottom:3px;color:var(--muted);font-size:9px;font-weight:750;text-transform:uppercase}}.endpoint code{{display:block;color:var(--secondary);font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}}
+.ssh-host{{display:block;margin-top:5px;color:var(--muted);font-size:10px;overflow-wrap:anywhere}}.ssh-host b{{color:var(--tertiary);font:650 10px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace}}
 .route.outbound .remote code,.route.inbound .local code{{color:var(--direction);font-weight:720}}
 .rail{{position:relative;display:flex;align-items:center;justify-content:center;height:28px;color:var(--direction)}}
 .rail i{{position:absolute;left:0;right:0;top:13px;height:2px;background:var(--direction)}}
@@ -298,11 +337,13 @@ tr:hover .rail i::before,tr:hover .rail i::after{{background:var(--surface-hover
 .empty{{padding:72px 24px;text-align:center;color:var(--tertiary)}}.empty strong{{display:block;margin-top:14px;color:var(--secondary);font-size:13px}}
 .empty-route{{display:flex;align-items:center;justify-content:center;width:132px;margin:0 auto}}.empty-route i{{width:9px;height:9px;border:2px solid var(--muted);border-radius:50%}}.empty-route span{{width:96px;height:1px;background:var(--line-strong)}}
 @media(prefers-color-scheme:dark){{:root{{--canvas:#111614;--surface:#171d1a;--surface-hover:#1b221f;--ink:#e7ece9;--secondary:#b4bfba;--tertiary:#84918b;--muted:#66736d;--line:rgba(231,236,233,.13);--line-soft:rgba(231,236,233,.08);--line-strong:rgba(231,236,233,.22);--green:#58b98a;--green-soft:#173b2a;--amber:#d8a847;--amber-soft:#3d3016;--red:#df7b71;--red-soft:#40201e;--blue:#70acd4;--blue-soft:#193247;--inbound:#d68ab8;--inbound-soft:#3d2032}}}}
-@media(max-width:760px){{.frame{{width:calc(100% - 24px);padding:24px 0 40px}}.topbar{{align-items:flex-start;flex-direction:column;gap:20px;padding-bottom:20px}}.overview{{width:100%;max-width:100%;justify-content:space-between}}.divider{{margin-left:auto}}.section-heading{{margin-top:24px}}table,tbody{{display:block;width:100%}}thead{{display:none}}tbody tr{{display:grid;width:100%;min-width:0;grid-template-columns:minmax(0,1fr) auto;padding:16px 14px;border-bottom:1px solid var(--line-soft)}}td{{display:block;min-width:0;padding:4px 0;border:0}}td::before{{content:attr(data-label);display:block;margin-bottom:3px;color:var(--muted);font-size:9px;font-weight:750;text-transform:uppercase}}.channel{{width:auto}}.route-cell,.health-cell{{grid-column:1/-1;width:auto;margin-top:12px}}.route{{grid-template-columns:minmax(0,1fr) 54px minmax(0,1fr);gap:6px}}.rail b{{padding:1px 4px}}.action{{grid-column:2;grid-row:1;width:auto;padding-left:10px;align-self:start}}.health-detail{{max-width:none}}}}
+@media(max-width:760px){{.frame{{width:calc(100% - 24px);padding:24px 0 40px}}.topbar{{align-items:flex-start;flex-direction:column;gap:20px;padding-bottom:20px}}.overview{{width:100%;max-width:100%;justify-content:space-between}}.divider{{margin-left:auto}}.config-context{{grid-template-columns:1fr;gap:10px}}.section-heading{{align-items:flex-start;flex-direction:column;gap:8px;margin-top:24px}}.section-meta{{width:100%;justify-content:space-between}}table,tbody{{display:block;width:100%}}thead{{display:none}}tbody tr{{display:grid;width:100%;min-width:0;grid-template-columns:minmax(0,1fr) auto;padding:16px 14px;border-bottom:1px solid var(--line-soft)}}td{{display:block;min-width:0;padding:4px 0;border:0}}td::before{{content:attr(data-label);display:block;margin-bottom:3px;color:var(--muted);font-size:9px;font-weight:750;text-transform:uppercase}}.channel{{width:auto}}.route-cell,.health-cell{{grid-column:1/-1;width:auto;margin-top:12px}}.route{{grid-template-columns:minmax(0,1fr) 54px minmax(0,1fr);gap:6px}}.rail b{{padding:1px 4px}}.action{{grid-column:2;grid-row:1;width:auto;padding-left:10px;align-self:start}}.health-detail{{max-width:none}}}}
 </style>
 </head>
-<body><main class="frame"><header class="topbar"><div class="brand"><span class="mark" aria-hidden="true"><i></i></span><div><p class="kicker">SSH Channels Hub</p><h1>Channel routes</h1></div></div><div class="overview"><div class="service"><span class="health {state_class}"><i></i>{state}</span><span class="service-label">Service</span></div><span class="divider" aria-hidden="true"></span><div class="coverage"><span><strong>{connected}</strong><em> / {total}</em></span><small>Connected</small><span class="coverage-bar" style="width:{coverage}%"></span></div></div></header><div class="section-heading"><div><p>Route ledger</p><h2>Forwarded channels</h2></div><div class="section-meta"><span class="refresh" title="Auto refresh every {WEB_REFRESH_SECONDS} seconds"><i aria-hidden="true">↻</i> {WEB_REFRESH_SECONDS}s</span><span class="count">{total} total</span></div></div><section class="panel" aria-label="Channel status"><table><thead><tr><th>Channel</th><th>Local / remote route</th><th>Health</th><th></th></tr></thead><tbody>{rows}</tbody></table></section></main></body>
+<body><main class="frame"><header class="topbar"><div class="brand"><span class="mark" aria-hidden="true"><i></i></span><div><p class="kicker">SSH Channels Hub</p><h1>Channel routes</h1></div></div><div class="overview"><div class="service"><span class="health {state_class}"><i></i>{state}</span><span class="service-label">Service</span></div><span class="divider" aria-hidden="true"></span><div class="coverage"><span><strong>{connected}</strong><em> / {total}</em></span><small>Connected</small><span class="coverage-bar" style="width:{coverage}%"></span></div></div></header><div class="config-context" aria-label="Configuration files"><div><span>Config</span><code>{config_path}</code></div><div><span>SSH config</span><code>{ssh_config_path}</code></div></div><div class="section-heading"><div><p>Route ledger</p><h2>Forwarded channels</h2></div><div class="section-meta"><a class="refresh" href="/" title="Refresh now; auto refresh every {WEB_REFRESH_SECONDS} seconds"><i aria-hidden="true">↻</i><span>{WEB_REFRESH_SECONDS}s</span><time data-refreshed-at>Just now</time></a><span class="count">{total} total</span></div></div><section class="panel" aria-label="Channel status"><table><thead><tr><th>Channel</th><th>Local / remote route</th><th>Health</th><th></th></tr></thead><tbody>{rows}</tbody></table></section></main><script src="/refresh.js" defer></script></body>
 </html>"#,
+    config_path = escape_html(&page_context.config_path),
+    ssh_config_path = escape_html(&page_context.ssh_config_path),
   )
 }
 
@@ -318,6 +359,7 @@ mod tests {
       channels: vec![
         ChannelStatus {
           name: "web <prod>".into(),
+          hostname: "prod <ssh>".into(),
           direction: Direction::LocalToRemote,
           local: "0.0.0.0:8080".into(),
           remote: "web.internal:80".into(),
@@ -325,6 +367,7 @@ mod tests {
         },
         ChannelStatus {
           name: "reverse".into(),
+          hostname: "edge-gateway".into(),
           direction: Direction::RemoteToLocal,
           local: "127.0.0.1:3000".into(),
           remote: "127.0.0.1:9000".into(),
@@ -335,7 +378,13 @@ mod tests {
       ],
     };
 
-    let page = render(&status);
+    let page = render(
+      &status,
+      &PageContext {
+        config_path: "/tmp/config<&>.toml".into(),
+        ssh_config_path: "/tmp/ssh<&>/config".into(),
+      },
+    );
     assert!(page.contains("web &lt;prod&gt;"));
     assert!(page.contains("href=\"http://127.0.0.1:8080\""));
     assert!(page.contains("href=\"http://127.0.0.1:3000\""));
@@ -347,7 +396,14 @@ mod tests {
     assert!(page.contains("<b>Inbound</b><code>SSH -R</code>"));
     assert!(page.contains("class=\"rail inbound\""));
     assert!(page.contains("http-equiv=\"refresh\" content=\"30\""));
-    assert!(page.contains("title=\"Auto refresh every 30 seconds\""));
+    assert!(page.contains("title=\"Refresh now; auto refresh every 30 seconds\""));
+    assert!(page.contains("<a class=\"refresh\" href=\"/\""));
+    assert!(page.contains("data-refreshed-at"));
+    assert!(page.contains("src=\"/refresh.js\""));
+    assert!(REFRESH_SCRIPT.contains("Intl.DateTimeFormat"));
+    assert!(page.contains("SSH host <b>prod &lt;ssh&gt;</b>"));
+    assert!(page.contains("/tmp/config&lt;&amp;&gt;.toml"));
+    assert!(page.contains("/tmp/ssh&lt;&amp;&gt;/config"));
     assert!(page.contains("bad &lt;key&gt;"));
   }
 
