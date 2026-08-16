@@ -47,3 +47,6 @@ owo-colors = { version = "4.1", features = ["supports-colors"] }
 publish = false
 pre-release-commit-message = "release: {{version}}"
 tag-message = "release {{version}}"
+
+[package.metadata.binstall]
+bin-dir = "{ bin }{ binary-ext }"

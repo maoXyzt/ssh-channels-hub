@@ -129,7 +129,7 @@ fn init_logging(debug: bool) -> AnyhowResult<()> {
 
   tracing_subscriber::fmt()
     .with_env_filter(filter)
-    .with_target(false)
+    .with_target(true)
     .init();
 
   Ok(())
@@ -202,6 +202,7 @@ async fn handle_start(
   println!();
   ui::info("Service running in foreground. Press Ctrl+C to stop.");
   ui::hint("Use `ssh-channels-hub start -D` to run in daemon mode.");
+  println!();
 
   tokio::select! {
       _ = tokio::signal::ctrl_c() => {}

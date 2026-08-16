@@ -2,17 +2,23 @@
 
 > English | [中文](./README-zh.md)
 
-Declarative SSH tunnels with auto-reconnect. Define your port forwards once in TOML, start one service, and they all come up — reconnecting automatically when the link drops.
+Declarative SSH tunnels with auto-reconnect. Define your port forwards once in
+TOML, start one service, and they all come up — reconnecting automatically when
+the link drops.
 
 Cross-platform (Linux, macOS, Windows). Written in Rust on top of [russh](https://docs.rs/russh).
 
 ## Why
 
-Reach for this when `ssh -L 3306:127.0.0.1:3306 db.example.com` has grown into *"I have five of those, my laptop sleeps, my Wi-Fi flakes, and I want them all back when I open the lid."*
+Reach for this when `ssh -L 3306:127.0.0.1:3306 db.example.com` has grown into
+*"I have five of those, my laptop sleeps, my Wi-Fi flakes, and I want them all
+back when I open the lid."*
 
 - **Declarative**: tunnels live in `config.toml`, not in shell history or terminal panes.
 - **No host config duplication**: host info (`HostName` / `User` / `Port` / `IdentityFile`) is read straight from `~/.ssh/config` — you reference aliases.
-- **ProxyJump aware**: chain through bastions defined in `~/.ssh/config` — alias-only references, publickey auth, and strict `known_hosts` checks for targets and jumps. See [docs/configuration.md §3.4](docs/configuration.md#34-host-info-从哪里来).
+- **ProxyJump aware**: chain through bastions defined in `~/.ssh/config` — using
+  alias-only references, public-key authentication, and strict `known_hosts`
+  checks for targets and jumps. See [docs/configuration.md §3.4](docs/configuration.md#34-host-info-从哪里来).
 - **Auto-reconnect**: compatible tunnels share one SSH session; a dropped route reconnects with jittered backoff without disturbing other routes.
 - **Both directions in one schema**: local-to-remote (`ssh -L`) and remote-to-local (`ssh -R`).
 - **Foreground or daemon**: `start` attaches to the terminal, `start -D` detaches; `stop` / `restart` / `status` talk to the running process via IPC.
@@ -35,7 +41,14 @@ ssh-channels-hub --help
 ```
 
 The wheel installs the same `ssh-channels-hub` binary on Linux x86_64,
-macOS arm64, and Windows x86_64; it does not run through Python.
+macOS ARM64, and Windows x86_64; it does not run through Python.
+
+If you already have a Rust/Cargo toolchain, you can also install with:
+
+```bash
+cargo binstall ssh-channels-hub          # requires cargo-binstall; installs a prebuilt binary
+cargo install ssh-channels-hub --locked # build and install from source
+```
 
 For development, clone and build the source:
 
@@ -69,7 +82,7 @@ remote    = "3306"              # server connects to 127.0.0.1:3306
 
 ```bash
 uvx ssh-channels-hub start      # no installation
-# or, after pip install:
+# or, after pip or Cargo installation:
 ssh-channels-hub start          # Ctrl+C to stop
 # or, after cargo build:
 ./target/release/ssh-channels-hub start       # Linux/macOS
@@ -94,7 +107,7 @@ Now `mysql -h 127.0.0.1 -P 3306` goes through the tunnel.
 
 ### Channel schema
 
-```toml
+```text
 [[channels]]
 name      = "string"                            # required, unique identifier
 hostname  = "ssh-config-alias"                  # required; resolves via ~/.ssh/config
@@ -109,6 +122,7 @@ remote    = "port" | "host:port"                # required, the SSH server's sid
 - **`remote->local`** (≈ `ssh -R`): the server binds `remote`; incoming traffic is bridged to `local` on this side.
 
 Endpoints accept:
+
 - `"3306"` → `127.0.0.1:3306` (bare port, host defaults to loopback)
 - `"127.0.0.1:3306"` → explicit form
 - `"0.0.0.0:8080"` → bind on every interface
@@ -116,10 +130,11 @@ Endpoints accept:
 
 ### Web status page
 
-Starting the service also serves a live channel dashboard on loopback. It shows
-the service summary, each channel's direction, local and remote endpoints,
-health, retry attempt, and latest error. The actual URL is printed for both
-foreground and daemon startup.
+When `[web].enabled = true` (the default), starting the service also serves a
+live channel dashboard on loopback. It shows the service summary, each channel's
+direction, local and remote endpoints, health, retry count, and latest error.
+The actual URL is printed for both foreground and daemon startup. Set
+`[web].enabled = false` to disable the dashboard and URL output.
 
 Every channel has an **Open local** link built from its `local` endpoint. This
 also applies to `remote->local` channels: the link opens the local service being
@@ -134,7 +149,8 @@ strict = false   # default: false; if occupied, try 9091, 9092, ...
 
 ### Credentials
 
-`~/.ssh/config` can't hold passwords or key passphrases. When SSH config alone can't authenticate the host, add an `[auth.<alias>]` block keyed by the SSH config alias:
+`~/.ssh/config` can't hold passwords or key passphrases. If SSH config alone
+can't authenticate to a host, add an `[auth.<alias>]` block keyed by its alias:
 
 ```toml
 [auth.my-db]
@@ -162,7 +178,10 @@ serialized to avoid reconnect storms.
 
 ### More examples
 
-**Listen on every interface** so other LAN machines can use the tunnel (mind your firewall):
+#### Share the tunnel on the local network
+
+Listen on every interface so other LAN machines can use the tunnel (mind your
+firewall):
 
 ```toml
 [[channels]]
@@ -173,18 +192,24 @@ local     = "0.0.0.0:3306"
 remote    = "3306"
 ```
 
-**Expose a local service to the SSH server** (`ssh -R`):
+#### Expose a local-network service to the SSH server
+
+With `remote->local` (`ssh -R`), `local` can point to another service reachable
+from this machine instead of loopback:
 
 ```toml
 [[channels]]
-name      = "expose-local-web"
-hostname  = "jumpbox"
+name      = "lan-api"
+hostname  = "edge-server"
 direction = "remote->local"
-remote    = "8022"              # server binds 127.0.0.1:8022
-local     = "80"                # incoming traffic bridges to 127.0.0.1:80 here
+local     = "192.168.1.50:3000" # bare "3000" means 127.0.0.1:3000
+remote    = "8080"              # edge-server binds 127.0.0.1:8080
 ```
 
-(For the server to bind `0.0.0.0:8022`, set `remote = "0.0.0.0:8022"` **and** enable `GatewayPorts` in the server's `sshd_config`.)
+This exposes `192.168.1.50:3000` at `127.0.0.1:8080` on `edge-server`.
+
+To bind `0.0.0.0:8080` on the server, set `remote = "0.0.0.0:8080"` and
+configure `GatewayPorts clientspecified` in the server's `sshd_config`.
 
 Full field reference: [docs/configuration.md](docs/configuration.md).
 
@@ -195,7 +220,7 @@ Full field reference: [docs/configuration.md](docs/configuration.md).
 | `start` | Run in the foreground (Ctrl+C to stop). |
 | `start -D` / `--daemon` | Spawn a detached background process. |
 | `stop` | Tell the running process to exit gracefully (via IPC). |
-| `restart` | Stop the running service, then re-start as daemon. |
+| `restart` | Stop the running service, then restart it as a daemon. |
 | `status` | Show service state, per-channel health (Connected / Reconnecting / Failed / Stopped), PID, and endpoints. Add `--watch / -w` to refresh every `--interval / -n` seconds (default 2). |
 | `test` | Probe each configured `local->remote` listener to confirm the tunnel is alive. `remote->local` channels are skipped — verify those server-side. |
 | `validate` | Resolve every channel against `~/.ssh/config` and report any problems. |
