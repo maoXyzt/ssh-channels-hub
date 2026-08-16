@@ -107,7 +107,7 @@ Now `mysql -h 127.0.0.1 -P 3306` goes through the tunnel.
 
 ### Channel schema
 
-```toml
+```text
 [[channels]]
 name      = "string"                            # required, unique identifier
 hostname  = "ssh-config-alias"                  # required; resolves via ~/.ssh/config
@@ -130,10 +130,11 @@ Endpoints accept:
 
 ### Web status page
 
-Starting the service also serves a live channel dashboard on loopback. It shows
-the service summary, each channel's direction, local and remote endpoints,
-health, retry count, and latest error. The actual URL is printed for both
-foreground and daemon startup.
+When `[web].enabled = true` (the default), starting the service also serves a
+live channel dashboard on loopback. It shows the service summary, each channel's
+direction, local and remote endpoints, health, retry count, and latest error.
+The actual URL is printed for both foreground and daemon startup. Set
+`[web].enabled = false` to disable the dashboard and URL output.
 
 Every channel has an **Open local** link built from its `local` endpoint. This
 also applies to `remote->local` channels: the link opens the local service being

@@ -106,7 +106,7 @@ ssh-channels-hub start          # Ctrl+C 退出
 
 ### Channel schema
 
-```toml
+```text
 [[channels]]
 name      = "string"                            # 必填，唯一标识
 hostname  = "ssh-config-alias"                  # 必填，来自 ~/.ssh/config 的 alias
@@ -129,9 +129,10 @@ Endpoint 接受以下写法：
 
 ### Web 状态页
 
-服务启动后会在 loopback 地址提供实时 channel 控制台，展示服务摘要、每条
-channel 的方向、local / remote 端点、健康状态、重试次数和最近一次错误。
-前台和 daemon 启动都会打印实际 URL。
+当 `[web].enabled = true`（默认值）时，服务启动后会在 loopback 地址提供实时
+channel 控制台，展示服务摘要、每条 channel 的方向、local / remote 端点、健康
+状态、重试次数和最近一次错误。前台和 daemon 启动都会打印实际 URL。设置
+`[web].enabled = false` 会关闭状态页，也不会打印其 URL。
 
 每条 channel 都有基于 `local` 端点生成的 **Open local** 链接，包括
 `remote->local`：链接打开的是被暴露的本地服务，不会使用远端监听地址。
