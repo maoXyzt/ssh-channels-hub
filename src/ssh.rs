@@ -923,6 +923,15 @@ fn make_client_config(host: &str, port: u16) -> Arc<russh::client::Config> {
     prioritize_known_host_key_algorithms(config.preferred.key.to_mut(), &known_algorithms);
   }
 
+  info!(
+    host,
+    port,
+    rekey_read_limit_mib = config.limits.rekey_read_limit / (1024 * 1024),
+    rekey_write_limit_mib = config.limits.rekey_write_limit / (1024 * 1024),
+    rekey_time_limit_secs = config.limits.rekey_time_limit.as_secs(),
+    "SSH session key rotation policy"
+  );
+
   Arc::new(config)
 }
 
