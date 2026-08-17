@@ -942,12 +942,52 @@ fn prioritize_known_host_key_algorithms(
   algorithms.sort_by_key(|algorithm| !known_algorithms.contains(&algorithm.0));
 }
 
-fn map_ssh_connect_error(context: String, error: russh::Error) -> AppError {
+fn map_ssh_connect_error(
+  context: String,
+  host: &str,
+  port: u16,
+  alias: Option<&str>,
+  error: russh::Error,
+) -> AppError {
   match &error {
-    russh::Error::UnknownKey | russh::Error::KeyChanged { .. } => {
-      AppError::SshHostKey(format!("{}: {}", context, error))
-    }
+    russh::Error::UnknownKey | russh::Error::KeyChanged { .. } => AppError::SshHostKey(format!(
+      "{}: {} {}",
+      context,
+      error,
+      host_key_remediation(host, port, alias, &error)
+    )),
     _ => AppError::SshConnection(format!("{}: {}", context, error)),
+  }
+}
+
+fn host_key_remediation(
+  host: &str,
+  port: u16,
+  alias: Option<&str>,
+  error: &russh::Error,
+) -> String {
+  let scan = format!("`ssh-keyscan -p {} {} >> ~/.ssh/known_hosts`", port, host);
+  match error {
+    russh::Error::UnknownKey => match alias {
+      Some(alias) => format!(
+        "Verify the fingerprint, then run {} or `ssh {}` once.",
+        scan, alias
+      ),
+      None => format!("Verify the fingerprint, then run {}.", scan),
+    },
+    russh::Error::KeyChanged { .. } => format!(
+      "Verify the fingerprint, then remove the stale entry with `ssh-keygen -R {}`.",
+      known_hosts_key(host, port)
+    ),
+    _ => String::new(),
+  }
+}
+
+fn known_hosts_key(host: &str, port: u16) -> String {
+  if port == 22 {
+    host.to_string()
+  } else {
+    format!("[{}]:{}", host, port)
   }
 }
 
@@ -993,6 +1033,9 @@ where
               "Failed to connect to ProxyJump '{}' ({}:{})",
               hop.alias, hop.host, hop.port
             ),
+            &hop.host,
+            hop.port,
+            Some(&hop.alias),
             error,
           )
         })?
@@ -1023,6 +1066,9 @@ where
               "SSH handshake with ProxyJump '{}' (via '{}') failed",
               hop.alias, prev_alias
             ),
+            &hop.host,
+            hop.port,
+            Some(&hop.alias),
             error,
           )
         })?
@@ -1040,7 +1086,15 @@ where
       terminal_handler,
     )
     .await
-    .map_err(|error| map_ssh_connect_error("Failed to connect".into(), error))?
+    .map_err(|error| {
+      map_ssh_connect_error(
+        "Failed to connect".into(),
+        &config.host,
+        config.port,
+        None,
+        error,
+      )
+    })?
   } else {
     let prev_alias = config
       .proxy_jumps
@@ -1068,7 +1122,15 @@ where
     let stream = channel.into_stream();
     russh::client::connect_stream(russh_cfg, stream, terminal_handler)
       .await
-      .map_err(|error| map_ssh_connect_error("SSH handshake with target failed".into(), error))?
+      .map_err(|error| {
+        map_ssh_connect_error(
+          "SSH handshake with target failed".into(),
+          &config.host,
+          config.port,
+          None,
+          error,
+        )
+      })?
   };
 
   info!(channel = %config.name, "SSH connection established, authenticating");
@@ -1329,6 +1391,44 @@ mod tests {
     assert!(
       msg.contains("password authentication rejected"),
       "expected rejected auth message, got: {msg}"
+    );
+  }
+
+  #[test]
+  fn host_key_errors_include_web_remediation_command() {
+    let error = map_ssh_connect_error(
+      "Failed to connect".into(),
+      "db.example.com",
+      2222,
+      None,
+      russh::Error::UnknownKey,
+    );
+    let message = error.to_string();
+    assert!(message.contains("ssh-keyscan -p 2222 db.example.com >> ~/.ssh/known_hosts"));
+
+    let jump_error = map_ssh_connect_error(
+      "ProxyJump failed".into(),
+      "bastion.example.com",
+      22,
+      Some("bastion"),
+      russh::Error::UnknownKey,
+    );
+    assert!(jump_error.to_string().contains("ssh bastion"));
+  }
+
+  #[test]
+  fn changed_host_key_errors_include_remediation_command() {
+    let error = map_ssh_connect_error(
+      "Failed to connect".into(),
+      "db.example.com",
+      2222,
+      None,
+      russh::Error::KeyChanged { line: 7 },
+    );
+    assert!(
+      error
+        .to_string()
+        .contains("ssh-keygen -R [db.example.com]:2222")
     );
   }
 

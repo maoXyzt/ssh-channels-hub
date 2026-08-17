@@ -416,6 +416,31 @@ mod tests {
     );
   }
 
+  #[test]
+  fn renders_host_key_remediation_command() {
+    let page = render(
+      &ServiceStatus {
+        state: ServiceState::Running,
+        channels: vec![ChannelStatus {
+          name: "db".into(),
+          hostname: "db".into(),
+          direction: Direction::LocalToRemote,
+          local: "127.0.0.1:3306".into(),
+          remote: "127.0.0.1:3306".into(),
+          health: ChannelHealth::Failed {
+            error: "Verify the fingerprint, then run `ssh-keyscan -p 2222 db.example.com >> ~/.ssh/known_hosts`.".into(),
+          },
+        }],
+      },
+      &PageContext {
+        config_path: "config.toml".into(),
+        ssh_config_path: "~/.ssh/config".into(),
+      },
+    );
+
+    assert!(page.contains("ssh-keyscan -p 2222 db.example.com &gt;&gt; ~/.ssh/known_hosts"));
+  }
+
   #[tokio::test]
   async fn occupied_port_falls_forward_unless_strict() {
     let (_, ephemeral_port) = bind(&WebConfig {
