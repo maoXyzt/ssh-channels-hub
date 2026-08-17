@@ -100,7 +100,7 @@ Now `mysql -h 127.0.0.1 -P 3306` goes through the tunnel.
 | Platform | Path |
 |---|---|
 | Current directory (always tried first) | `./config.toml` |
-| Linux / macOS | `~/.config/ssh-channels-hub/config.toml` |
+| Linux / macOS | `$XDG_CONFIG_HOME/ssh-channels-hub/config.toml` (`~/.config/...` when unset) |
 | Windows | `%APPDATA%\ssh-channels-hub\config.toml` |
 
 `--config /path/to/file` overrides the lookup.
