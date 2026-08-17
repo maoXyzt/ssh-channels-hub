@@ -4,6 +4,16 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[cfg(not(windows))]
+fn resolve_unix_config_dir(
+  xdg_config_home: Option<PathBuf>,
+  home_dir: Option<PathBuf>,
+) -> Option<PathBuf> {
+  xdg_config_home
+    .filter(|path| path.is_absolute())
+    .or_else(|| home_dir.map(|home| home.join(".config")))
+}
+
 /// Tunnel direction. `LocalToRemote` ≈ `ssh -L`, `RemoteToLocal` ≈ `ssh -R`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -369,11 +379,21 @@ impl AppConfig {
   }
 
   /// Default config file candidates (first existing wins; if none exist, first is used).
-  /// Order: current directory `config.toml`, then platform config dir `config.toml`.
+  /// Order: current directory, then `$XDG_CONFIG_HOME` (`~/.config` by default) on Unix
+  /// or `%APPDATA%` on Windows.
   pub fn default_path_candidates() -> Vec<PathBuf> {
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut candidates = vec![current_dir.join("config.toml")];
-    if let Some(mut path) = dirs::config_dir() {
+
+    #[cfg(windows)]
+    let config_dir = dirs::config_dir();
+    #[cfg(not(windows))]
+    let config_dir = resolve_unix_config_dir(
+      std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+      dirs::home_dir(),
+    );
+
+    if let Some(mut path) = config_dir {
       path.push("ssh-channels-hub");
       path.push("config.toml");
       candidates.push(path);
@@ -818,6 +838,36 @@ fn resolve_auth(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[cfg(unix)]
+  #[test]
+  fn unix_config_dir_uses_absolute_xdg_path_or_home_fallback() {
+    let home_dir = PathBuf::from("/home/test-user");
+
+    assert_eq!(
+      resolve_unix_config_dir(
+        Some(PathBuf::from("/custom/config")),
+        Some(home_dir.clone())
+      ),
+      Some(PathBuf::from("/custom/config"))
+    );
+    assert_eq!(
+      resolve_unix_config_dir(None, Some(home_dir.clone())),
+      Some(home_dir.join(".config"))
+    );
+    assert_eq!(
+      resolve_unix_config_dir(Some(PathBuf::new()), Some(home_dir.clone())),
+      Some(home_dir.join(".config"))
+    );
+    assert_eq!(
+      resolve_unix_config_dir(
+        Some(PathBuf::from("relative/config")),
+        Some(home_dir.clone())
+      ),
+      Some(home_dir.join(".config"))
+    );
+    assert_eq!(resolve_unix_config_dir(Some(PathBuf::new()), None), None);
+  }
 
   #[test]
   fn web_defaults_to_enabled_with_flexible_port() {

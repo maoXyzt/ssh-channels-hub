@@ -57,7 +57,12 @@ max_delay_secs = 30
 use_exponential_backoff = true
 ```
 
-`config.toml` 默认查找顺序:`./config.toml` → `~/.config/ssh-channels-hub/config.toml` → `%APPDATA%\ssh-channels-hub\config.toml`(Windows)。也可用 `--config` 显式指定。
+`config.toml` 默认查找顺序:
+
+- Linux/macOS: `./config.toml` → `$XDG_CONFIG_HOME/ssh-channels-hub/config.toml`(未设置时使用 `~/.config/ssh-channels-hub/config.toml`)
+- Windows: `./config.toml` → `%APPDATA%\ssh-channels-hub\config.toml`
+
+也可用 `--config` 显式指定。
 
 ### 1.3 启动
 

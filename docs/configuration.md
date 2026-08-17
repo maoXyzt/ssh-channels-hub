@@ -7,7 +7,7 @@ SSH Channels Hub 把 host 信息(`HostName` / `User` / `Port` / `IdentityFile`)�
 按顺序查找,使用第一个存在的文件:
 
 - 当前目录: `./config.toml`
-- Linux/macOS: `~/.config/ssh-channels-hub/config.toml`
+- Linux/macOS: `$XDG_CONFIG_HOME/ssh-channels-hub/config.toml`(未设置时默认为 `~/.config/ssh-channels-hub/config.toml`)
 - Windows: `%APPDATA%\ssh-channels-hub\config.toml`
 
 `--config` 指定时仅使用该文件,不再查找默认路径。
