@@ -369,11 +369,20 @@ impl AppConfig {
   }
 
   /// Default config file candidates (first existing wins; if none exist, first is used).
-  /// Order: current directory `config.toml`, then platform config dir `config.toml`.
+  /// Order: current directory, then `$XDG_CONFIG_HOME` (`~/.config` by default) on Unix
+  /// or `%APPDATA%` on Windows.
   pub fn default_path_candidates() -> Vec<PathBuf> {
     let current_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut candidates = vec![current_dir.join("config.toml")];
-    if let Some(mut path) = dirs::config_dir() {
+
+    #[cfg(windows)]
+    let config_dir = dirs::config_dir();
+    #[cfg(not(windows))]
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+      .map(PathBuf::from)
+      .or_else(|| dirs::home_dir().map(|home| home.join(".config")));
+
+    if let Some(mut path) = config_dir {
       path.push("ssh-channels-hub");
       path.push("config.toml");
       candidates.push(path);
@@ -818,6 +827,20 @@ fn resolve_auth(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[cfg(unix)]
+  #[test]
+  fn default_path_candidates_include_xdg_config() {
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+      .map(PathBuf::from)
+      .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+      .expect("Unix user has a config directory");
+
+    assert!(
+      AppConfig::default_path_candidates()
+        .contains(&config_dir.join("ssh-channels-hub/config.toml"))
+    );
+  }
 
   #[test]
   fn web_defaults_to_enabled_with_flexible_port() {
