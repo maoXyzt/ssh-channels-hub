@@ -94,8 +94,11 @@ server through SSH.
 # Password authentication (no IdentityFile in SSH config)
 [auth.remote-server]
 password = "your-password"
+```
 
-# Or an encrypted IdentityFile
+Or, for an encrypted `IdentityFile`:
+
+```toml
 [auth.remote-server]
 passphrase = "your-key-passphrase"
 ```
@@ -477,8 +480,11 @@ ssh-channels-hub start --debug       # 调试日志
 # 密码登录(SSH config 无 IdentityFile)
 [auth.remote-server]
 password = "your-password"
+```
 
-# 或:IdentityFile 受 passphrase 保护
+如果 `IdentityFile` 受 passphrase 保护:
+
+```toml
 [auth.remote-server]
 passphrase = "your-key-passphrase"
 ```

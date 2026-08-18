@@ -107,22 +107,21 @@ cargo test --locked
 cargo publish --dry-run --locked --registry crates-io
 ```
 
-CI runs the same metadata check on normal pushes and pull requests.
+CI runs this check for pull requests and manual dispatches. Ordinary branch
+pushes skip it; release tag pushes run the actual publish job.
 
 ### 4. Release procedure
 
 #### 4.1 Switch to the release branch
 
-`cargo-release` allows `main` or `master` by default. Merge `dev` first:
+Project releases are made from `main`. `cargo-release` 1.1.2 does not enforce
+this by default, so switch branches explicitly:
 
 ```bash
 git checkout main
 git pull
 git merge --ff-only dev   # or merge a pull request into main
 ```
-
-To release directly from `dev`, add it to `allow-branch` under
-`[package.metadata.release]` in `Cargo.toml`.
 
 #### 4.2 Preview the release
 
@@ -161,15 +160,11 @@ After all jobs pass, confirm the GitHub Release archives and checksums, the new
 | Unexpected publish during `cargo release` | `[package.metadata.release].publish = false` disables its local publish step; `[package].publish` remains unset so CI can run `cargo publish` |
 | One platform fails after publication | Publish jobs depend on all builds or wheels |
 | Formatting, clippy, or tests fail | Release and publish jobs depend on `lint` |
-| Package metadata regresses | Normal pushes run `publish-dry-run` |
+| Package metadata regresses | Pull requests and manual workflow runs execute `publish-dry-run`; release tags execute `publish` |
 | Branch and tag trigger duplicate builds | `preflight` skips the duplicate release commit run |
 | PyPI token leaks | PyPI uses OIDC Trusted Publisher |
 
 ### 6. Troubleshooting
-
-#### `cargo release` reports `branch 'dev' is not whitelisted`
-
-Switch to `main`, or add `dev` to `allow-branch` as described in section 4.1.
 
 #### `publish` reports `crate version is already uploaded`
 
@@ -314,25 +309,23 @@ cargo test --locked
 
 #### 3.3 干跑一次 dry-run publish(可选)
 
-CI 在每次 PR / push 都会跑 `publish-dry-run`，本地不是必须，但想提前发现 metadata 问题可以:
-
 ```bash
 cargo publish --dry-run --locked --registry crates-io
 ```
+
+CI 会在 PR 和手动触发时执行这项检查。普通分支 push 会跳过；release tag push 会执行实际发布。
 
 ### 4. 发版流程
 
 #### 4.1 切换到发版分支
 
-`cargo-release` 默认只允许从 `main` / `master` 发版。先合并 `dev` → `main`:
+项目约定从 `main` 发版。`cargo-release` 1.1.2 默认不强制发版分支，因此需手动切换:
 
 ```bash
 git checkout main
 git pull
 git merge --ff-only dev   # 或走 PR 合并到 main
 ```
-
-> 如确需从 `dev` 直接发版，可在 `Cargo.toml` 的 `[package.metadata.release]` 加 `allow-branch = ["main", "dev"]`。
 
 #### 4.2 干跑确认
 
@@ -383,15 +376,11 @@ cargo release patch --execute
 | `cargo release` 意外发布 | `[package.metadata.release].publish = false` 禁用其本地发布步骤；`[package].publish` 保持未设置，因此 CI 仍可运行 `cargo publish` |
 | 平台编译挂掉但已发包 | `publish` 依赖 `build` 全绿；`publish-pypi` 依赖 `wheels` 全绿 |
 | 代码有 fmt / clippy / 测试问题 | `lint` job 是 `release` / `publish` 的强依赖，失败则停发 |
-| PR 引入 metadata 回归(license / readme / include) | 非 tag 推送都触发 `publish-dry-run` job 跑 `cargo publish --dry-run` |
+| PR 引入 metadata 回归(license / readme / include) | PR 和手动触发会执行 `publish-dry-run`；release tag 会执行 `publish` |
 | cargo-release 推 main + tag 触发双跑 CI | `preflight` job 识别 `release:` commit message，跳过 main 分支那一次重复构建 |
 | PyPI token 泄漏 | PyPI 走 OIDC Trusted Publisher，没有长期 token |
 
 ### 6. 故障排查
-
-#### `cargo release` 报 `branch 'dev' is not whitelisted`
-
-发版分支不在 `allow-branch` 里。要么切回 `main`，要么按 §4.1 末尾说明改配置。
 
 #### CI `publish` job 报 `crate version is already uploaded`
 
