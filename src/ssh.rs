@@ -942,13 +942,69 @@ fn prioritize_known_host_key_algorithms(
   algorithms.sort_by_key(|algorithm| !known_algorithms.contains(&algorithm.0));
 }
 
-fn map_ssh_connect_error(context: String, error: russh::Error) -> AppError {
+/// Map russh connection failures into application errors.
+///
+/// Unknown or changed host keys become permanent `AppError::SshHostKey`
+/// errors containing a copyable remediation command for CLI and Web status.
+fn map_ssh_connect_error(
+  context: String,
+  host: &str,
+  port: u16,
+  alias: Option<&str>,
+  error: russh::Error,
+) -> AppError {
   match &error {
-    russh::Error::UnknownKey | russh::Error::KeyChanged { .. } => {
-      AppError::SshHostKey(format!("{}: {}", context, error))
-    }
+    russh::Error::UnknownKey | russh::Error::KeyChanged { .. } => AppError::SshHostKey(format!(
+      "{}: {} {}",
+      context,
+      error,
+      host_key_remediation(host, port, alias, &error)
+    )),
     _ => AppError::SshConnection(format!("{}: {}", context, error)),
   }
+}
+
+/// Build the verification and remediation text for an unknown or changed host key.
+fn host_key_remediation(
+  host: &str,
+  port: u16,
+  alias: Option<&str>,
+  error: &russh::Error,
+) -> String {
+  let scan = format!(
+    "`ssh-keyscan -p {} {} >> ~/.ssh/known_hosts`",
+    port,
+    shell_quote(host)
+  );
+  match error {
+    russh::Error::UnknownKey => match alias {
+      Some(alias) => format!(
+        "Verify the fingerprint, then run {} or `ssh {}` once.",
+        scan,
+        shell_quote(alias)
+      ),
+      None => format!("Verify the fingerprint, then run {}.", scan),
+    },
+    russh::Error::KeyChanged { .. } => format!(
+      "Verify the fingerprint, then remove the stale entry with `ssh-keygen -R {}`.",
+      shell_quote(&known_hosts_key(host, port))
+    ),
+    _ => String::new(),
+  }
+}
+
+/// Format the lookup key OpenSSH uses for a host in `known_hosts`.
+fn known_hosts_key(host: &str, port: u16) -> String {
+  if port == 22 {
+    host.to_string()
+  } else {
+    format!("[{}]:{}", host, port)
+  }
+}
+
+/// Quote one POSIX shell argument for the copyable remediation commands.
+fn shell_quote(value: &str) -> String {
+  format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 /// Establish the SSH session to the channel's target, optionally walking a
@@ -993,6 +1049,9 @@ where
               "Failed to connect to ProxyJump '{}' ({}:{})",
               hop.alias, hop.host, hop.port
             ),
+            &hop.host,
+            hop.port,
+            Some(&hop.alias),
             error,
           )
         })?
@@ -1023,6 +1082,9 @@ where
               "SSH handshake with ProxyJump '{}' (via '{}') failed",
               hop.alias, prev_alias
             ),
+            &hop.host,
+            hop.port,
+            Some(&hop.alias),
             error,
           )
         })?
@@ -1040,7 +1102,15 @@ where
       terminal_handler,
     )
     .await
-    .map_err(|error| map_ssh_connect_error("Failed to connect".into(), error))?
+    .map_err(|error| {
+      map_ssh_connect_error(
+        "Failed to connect".into(),
+        &config.host,
+        config.port,
+        None,
+        error,
+      )
+    })?
   } else {
     let prev_alias = config
       .proxy_jumps
@@ -1068,7 +1138,15 @@ where
     let stream = channel.into_stream();
     russh::client::connect_stream(russh_cfg, stream, terminal_handler)
       .await
-      .map_err(|error| map_ssh_connect_error("SSH handshake with target failed".into(), error))?
+      .map_err(|error| {
+        map_ssh_connect_error(
+          "SSH handshake with target failed".into(),
+          &config.host,
+          config.port,
+          None,
+          error,
+        )
+      })?
   };
 
   info!(channel = %config.name, "SSH connection established, authenticating");
@@ -1330,6 +1408,49 @@ mod tests {
       msg.contains("password authentication rejected"),
       "expected rejected auth message, got: {msg}"
     );
+  }
+
+  #[test]
+  fn host_key_errors_include_web_remediation_command() {
+    let error = map_ssh_connect_error(
+      "Failed to connect".into(),
+      "db.example.com",
+      2222,
+      None,
+      russh::Error::UnknownKey,
+    );
+    let message = error.to_string();
+    assert!(message.contains("ssh-keyscan -p 2222 'db.example.com' >> ~/.ssh/known_hosts"));
+
+    let jump_error = map_ssh_connect_error(
+      "ProxyJump failed".into(),
+      "bastion.example.com",
+      22,
+      Some("bastion"),
+      russh::Error::UnknownKey,
+    );
+    assert!(jump_error.to_string().contains("ssh 'bastion'"));
+  }
+
+  #[test]
+  fn changed_host_key_errors_include_remediation_command() {
+    let error = map_ssh_connect_error(
+      "Failed to connect".into(),
+      "db.example.com",
+      2222,
+      None,
+      russh::Error::KeyChanged { line: 7 },
+    );
+    assert!(
+      error
+        .to_string()
+        .contains("ssh-keygen -R '[db.example.com]:2222'")
+    );
+  }
+
+  #[test]
+  fn remediation_shell_arguments_escape_single_quotes() {
+    assert_eq!(shell_quote("host'alias"), "'host'\"'\"'alias'");
   }
 
   #[test]
