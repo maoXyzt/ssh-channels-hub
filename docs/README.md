@@ -1,134 +1,66 @@
-# SSH Channels Hub 设计文档
+# SSH Channels Hub Documentation / 文档
 
-欢迎阅读 SSH Channels Hub 的设计文档。本文档提供了项目的详细设计说明。
+> English | [中文](#中文)
 
-## 文档索引
+## English
 
-1. **[使用教程](./HowToUse.md)** - 用户使用指南
-   - 端口转发（SSH 隧道）使用指南
-   - 常见使用场景和配置示例
-   - 故障排查指南
-   - 最佳实践
+For an overview and quick start, see the [README](../README.md) or
+[Chinese README](../README-zh.md).
 
-2. **[配置文档](./configuration.md)** - 配置参考
-   - 配置文件格式说明
-   - 配置项详解
-   - 配置示例
-   - 最佳实践和故障排查
+### User documentation
 
-3. **[架构设计文档](./architecture.md)** - 系统架构
-   - 系统整体架构
-   - 核心组件说明
-   - 数据流和并发模型
-   - 扩展性设计
-   - 安全性和性能考虑
+- [Usage guide](./HowToUse.md): installation, configuration, and common tasks
+- [Configuration reference](./configuration.md): fields, examples, and errors
+- [Troubleshooting](./troubleshooting.md): connection, authentication, host-key,
+  and port problems
+- [Connection testing](./testing.md): verify configured channels
 
-4. **[模块设计文档](./modules.md)** - 模块设计
-   - 各模块详细说明
-   - 模块接口设计
-   - 模块间依赖关系
-   - 扩展点和测试策略
+### Design documentation
 
-5. **[工作流程文档](./workflow.md)** - 工作流程
-   - 应用程序启动流程
-   - SSH 连接建立流程
-   - 重连流程
-   - 关闭和错误处理流程
+- [Architecture](./architecture.md): components and concurrency model
+- [Module design](./modules.md): module responsibilities and dependencies
+- [Workflows](./workflow.md): startup, connection, reconnection, and shutdown
 
-6. **[发版手册](./how_to_release.md)** - 仓库管理员发版指南
-   - `cargo release` + CI 双段流程
-   - conventional commits 与 changelog 生成规则
-   - 防呆机制与故障排查
-   - 撤回已发版本(`cargo yank`)
+### Maintainer documentation
 
-## 快速开始
+- [Release guide](./how_to_release.md): publishing and withdrawal procedures
+- [Development guidelines](../AGENTS.md): code conventions and contribution rules
 
-### 阅读顺序建议
+Recommended order:
 
-1. **新用户**:
-   - 先阅读 [使用教程](./HowToUse.md) 快速上手
-   - 然后阅读 [配置文档](./configuration.md) 了解详细配置
-   - 最后阅读 [工作流程文档](./workflow.md) 了解工作原理
+- Users: README -> Usage guide -> Configuration reference
+- Developers: Architecture -> Module design -> Workflows
+- Maintainers: Development guidelines -> Release guide
 
-2. **开发者**:
-   - 先阅读 [架构设计文档](./architecture.md) 了解整体设计
-   - 然后阅读 [模块设计文档](./modules.md) 了解实现细节
-   - 参考 [使用教程](./HowToUse.md) 了解用户场景
+See also [config.example.toml](../config.example.toml) and
+[LICENSE](../LICENSE).
 
-3. **贡献者**:
-   - 阅读所有文档
-   - 重点关注扩展性设计和测试策略
+## 中文
 
-## 项目概述
+项目概览和快速开始见 [README](../README.md) / [中文 README](../README-zh.md)。
 
-SSH Channels Hub 是一个用于管理和维护多个 SSH channels 的 CLI 应用程序。它通过配置文件定义需要建立的 SSH 连接，自动管理连接生命周期，并在连接断开时自动重连。
+### 用户文档
 
-### 核心特性
+- [使用教程](./HowToUse.md)：安装、配置和常用操作
+- [配置参考](./configuration.md)：完整字段、示例和配置错误
+- [故障排查](./troubleshooting.md)：连接、认证、主机密钥和端口问题
+- [连接测试](./testing.md)：验证配置的 channel
 
-- ✅ 多 channels 管理：同时管理多个 SSH 连接和 channels
-- ✅ 自动重连：连接断开时自动重连，支持多种重试策略
-- ✅ 灵活配置：支持 TOML 格式配置文件
-- ✅ 多种认证：支持密码、密钥认证
-- ✅ 端口转发：支持 Direct-TCPIP（端口转发）
-- ✅ 结构化日志：使用 tracing 进行详细日志记录
+### 设计文档
 
-### 技术栈
+- [架构设计](./architecture.md)：整体架构和并发模型
+- [模块设计](./modules.md)：模块职责和依赖关系
+- [工作流程](./workflow.md)：启动、连接、重连和关闭流程
 
-- **语言**: Rust
-- **异步运行时**: Tokio
-- **SSH 库**: russh
-- **CLI**: clap
-- **配置**: TOML (serde)
-- **日志**: tracing + tracing-subscriber
-- **重试**: backon
-- **错误处理**: anyhow + thiserror
+### 维护文档
 
-## 架构概览
+- [发版手册](./how_to_release.md)：版本发布和撤回流程
+- [开发规范](../AGENTS.md)：代码约定和贡献要求
 
-```text
-┌─────────────────┐
-│   CLI Layer     │  ← 用户接口
-└────────┬────────┘
-         │
-┌────────▼────────┐
-│ Service Layer   │  ← 服务管理
-└────────┬────────┘
-         │
-┌────────▼────────┐
-│  SSH Layer      │  ← SSH 连接管理
-└─────────────────┘
-```
+推荐阅读顺序：
 
-## 设计原则
+- 新用户：README -> 使用教程 -> 配置参考
+- 开发者：架构设计 -> 模块设计 -> 工作流程
+- 维护者：开发规范 -> 发版手册
 
-1. **模块化**: 清晰的模块划分，单一职责原则
-2. **异步优先**: 所有 I/O 操作都是异步的
-3. **错误处理**: 统一的错误类型和处理策略
-4. **可扩展性**: 易于添加新功能（channel 类型、认证方式等）
-5. **可观测性**: 详细的日志记录和状态监控
-
-## 文档更新
-
-文档会随着项目的发展而更新。如果发现文档与代码不一致，请：
-
-1. 提交 Issue 报告问题
-2. 或提交 PR 更新文档
-
-## 相关资源
-
-- [项目 README](../README.md)
-- [AGENTS.md](../AGENTS.md) - 开发指南
-- [配置示例](../config.example.toml)
-
-## 贡献指南
-
-在贡献代码之前，请：
-
-1. 阅读所有设计文档
-2. 理解项目的架构和设计原则
-3. 遵循 [AGENTS.md](../AGENTS.md) 中的编码规范
-4. 确保新功能有相应的文档更新
-
-## 许可证
-
-[根据项目许可证]
+另见 [config.example.toml](../config.example.toml) 和 [LICENSE](../LICENSE)。

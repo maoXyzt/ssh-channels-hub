@@ -129,20 +129,11 @@ Endpoint 接受以下写法：
 
 ### Web 状态页
 
-当 `[web].enabled = true`（默认值）时，服务启动后会在 loopback 地址提供实时
-channel 控制台，展示服务摘要、每条 channel 的方向、local / remote 端点、健康
-状态、重试次数和最近一次错误。前台和 daemon 启动都会打印实际 URL。设置
-`[web].enabled = false` 会关闭状态页，也不会打印其 URL。
+Web 状态页默认开启，启动时会打印 loopback URL。页面展示 channel 端点、健康
+状态、重试次数、最近错误和主机密钥处置命令。
 
-每条 channel 都有基于 `local` 端点生成的 **Open local** 链接，包括
-`remote->local`：链接打开的是被暴露的本地服务，不会使用远端监听地址。
-
-```toml
-[web]
-enabled = true   # default: true；设为 false 可关闭
-port = 9090      # default: 9090；首选端口
-strict = false   # default: false；占用时依次尝试 9091、9092……
-```
+**Open local** 会打开 channel 的本地端点。设置 `[web].enabled = false` 可关闭
+状态页；其他选项见[配置参考](docs/configuration.md)。
 
 ### 凭证
 
@@ -162,11 +153,13 @@ passphrase = "..."          # IdentityFile 被 passphrase 保护
 
 ```toml
 [reconnection]
-max_retries             = 0     # 0 = 无限重试
-initial_delay_secs      = 1
-max_delay_secs          = 30
-use_exponential_backoff = true
+# max_retries             = 0     # default: 0 = 无限重试
+# initial_delay_secs      = 1     # default: 1 秒
+# max_delay_secs          = 30    # default: 30 秒
+# use_exponential_backoff = true  # default: true
 ```
+
+全部使用默认值时，可省略本节。
 
 每次重试都会加入 jitter。
 有限重试轮次耗尽后仍会自动恢复，但会改用最高 60 秒的第二层指数退避；session 成功建立后，两层计数都会重置。进程内 SSH 握手串行执行，以避免重连风暴。
@@ -175,7 +168,9 @@ use_exponential_backoff = true
 
 #### 与局域网其他设备共享隧道
 
-监听所有网卡，让局域网其他设备也能使用这个隧道（注意防火墙）：
+**场景：** 让局域网其他设备使用本机的数据库隧道。
+
+**配置：**
 
 ```toml
 [[channels]]
@@ -186,9 +181,14 @@ local     = "0.0.0.0:3306"
 remote    = "3306"
 ```
 
+**解释：** 服务监听 `0.0.0.0:3306`，并将连接转发到 `db-server` 上的
+`127.0.0.1:3306`。请使用防火墙限制访问。
+
 #### 向 SSH 服务器暴露本地网络服务
 
-使用 `remote->local`（`ssh -R`）时，`local` 可以指向本机能够访问的其他服务，不必是 loopback 地址：
+**场景：** 使用 `remote->local`（`ssh -R`）向 `edge-server` 暴露本地网络服务。
+
+**配置：**
 
 ```toml
 [[channels]]
@@ -199,10 +199,9 @@ local     = "192.168.1.50:3000" # 只填 "3000" 则代表 127.0.0.1:3000
 remote    = "8080"              # edge-server 监听 127.0.0.1:8080
 ```
 
-这样会把 `edge-server` 上的 `127.0.0.1:8080` 转发到
-`192.168.1.50:3000`。
-
-要让服务器监听 `0.0.0.0:8080` 以便外部访问，需要把 `remote` 改成 `"0.0.0.0:8080"`，并在服务器的 `sshd_config` 中设置 `GatewayPorts clientspecified`。
+**解释：** `edge-server` 上的 `127.0.0.1:8080` 会转发到
+`192.168.1.50:3000`。如需接受服务器外部连接，将 `remote` 改为
+`"0.0.0.0:8080"`，并在 `sshd_config` 中设置 `GatewayPorts clientspecified`。
 
 完整字段说明：[docs/configuration.md](docs/configuration.md)。
 
@@ -222,19 +221,12 @@ remote    = "8080"              # edge-server 监听 127.0.0.1:8080
 
 所有命令都接受 `--config /path/to/config.toml` 以指定非默认配置文件，也可以使用 `--debug` 打开详细日志。
 
-## 故障排查
-
-- **`Channel '...' references host alias '...', but no Host ... block exists`**——`hostname` 有误，或 `~/.ssh/config` 中没有对应的 alias。
-- **`Address(es) already in use`**——`local` 地址已被其他进程占用。更换端口或停止该进程。可以使用 `lsof -i :PORT`（Linux/macOS）或 `netstat -ano | findstr :PORT`（Windows）查找占用方。
-- **绑定小于 1024 的端口**——Linux/macOS 需要 root 权限，Windows 需要管理员权限。
-- **无法连接**——先手动运行 `ssh <alias>`，排查 SSH config、网络或 key 权限问题。
-- **加密 key 无法解锁**——添加 `[auth.<alias>] passphrase = "..."`。
-- **完整 debug 日志**——`ssh-channels-hub start --debug` 会打印每个 channel 的 SSH 握手、channel 打开和重连尝试等信息。
-
 ## 延伸阅读
 
+- [故障排查](docs/troubleshooting.md)——常见连接、主机密钥和端口问题。
 - [配置参考](docs/configuration.md)——每个字段和边界情况。
 - [使用教程](docs/HowToUse.md)——按任务组织的实际场景。
+- [连接测试](docs/testing.md)——验证配置的 channel。
 - [架构](docs/architecture.md)——channel、session 与重连之间如何协作。
 
 ## 许可证

@@ -1,4 +1,4 @@
-# SSH Channels Hub
+# sSSH Channels Hub
 
 > English | [中文](./README-zh.md)
 
@@ -17,8 +17,8 @@ back when I open the lid."*
 - **Declarative**: tunnels live in `config.toml`, not in shell history or terminal panes.
 - **No host config duplication**: host info (`HostName` / `User` / `Port` / `IdentityFile`) is read straight from `~/.ssh/config` — you reference aliases.
 - **ProxyJump aware**: chain through bastions defined in `~/.ssh/config` — using
-  alias-only references, public-key authentication, and strict `known_hosts`
-  checks for targets and jumps. See [docs/configuration.md §3.4](docs/configuration.md#34-host-info-从哪里来).
+alias-only references, public-key authentication, and strict `known_hosts`
+checks for targets and jumps. See [docs/configuration.md §3.4](docs/configuration.md#34-host-info-从哪里来).
 - **Auto-reconnect**: compatible tunnels share one SSH session; a dropped route reconnects with jittered backoff without disturbing other routes.
 - **Both directions in one schema**: local-to-remote (`ssh -L`) and remote-to-local (`ssh -R`).
 - **Foreground or daemon**: `start` attaches to the terminal, `start -D` detaches; `stop` / `restart` / `status` talk to the running process via IPC.
@@ -40,8 +40,7 @@ pip install ssh-channels-hub
 ssh-channels-hub --help
 ```
 
-The wheel installs the same `ssh-channels-hub` binary on Linux x86_64,
-macOS ARM64, and Windows x86_64; it does not run through Python.
+The wheel installs the same `ssh-channels-hub` binary on Linux x86_64, macOS ARM64, and Windows x86_64; it does not run through Python.
 
 If you already have a Rust/Cargo toolchain, you can also install with:
 
@@ -58,7 +57,7 @@ cd ssh-channels-hub
 cargo build --release           # binary at target/release/ssh-channels-hub (or .exe on Windows)
 ```
 
-**2. Have the host in `~/.ssh/config`**
+**2. Have the host in** `~/.ssh/config`
 
 ```
 Host my-db
@@ -67,7 +66,7 @@ Host my-db
   IdentityFile ~/.ssh/id_rsa
 ```
 
-**3. Write `config.toml`** in the current directory:
+**3. Write** `config.toml` in the current directory:
 
 ```toml
 [[channels]]
@@ -97,11 +96,13 @@ Now `mysql -h 127.0.0.1 -P 3306` goes through the tunnel.
 
 `config.toml` is looked up in this order (first existing wins):
 
-| Platform | Path |
-|---|---|
-| Current directory (always tried first) | `./config.toml` |
-| Linux / macOS | `$XDG_CONFIG_HOME/ssh-channels-hub/config.toml` (`~/.config/...` when unset) |
-| Windows | `%APPDATA%\ssh-channels-hub\config.toml` |
+
+| Platform                               | Path                                                                         |
+| -------------------------------------- | ---------------------------------------------------------------------------- |
+| Current directory (always tried first) | `./config.toml`                                                              |
+| Linux / macOS                          | `$XDG_CONFIG_HOME/ssh-channels-hub/config.toml` (`~/.config/...` when unset) |
+| Windows                                | `%APPDATA%\ssh-channels-hub\config.toml`                                     |
+
 
 `--config /path/to/file` overrides the lookup.
 
@@ -118,8 +119,8 @@ remote    = "port" | "host:port"                # required, the SSH server's sid
 
 `local` and `remote` always name the address on their respective side regardless of direction. Direction decides who listens:
 
-- **`local->remote`** (≈ `ssh -L`): this machine listens on `local`; the server dials `remote` for each connection.
-- **`remote->local`** (≈ `ssh -R`): the server binds `remote`; incoming traffic is bridged to `local` on this side.
+- `local->remote` (≈ `ssh -L`): this machine listens on `local`; the server dials `remote` for each connection.
+- `remote->local` (≈ `ssh -R`): the server binds `remote`; incoming traffic is bridged to `local` on this side.
 
 Endpoints accept:
 
@@ -130,27 +131,13 @@ Endpoints accept:
 
 ### Web status page
 
-When `[web].enabled = true` (the default), starting the service also serves a
-live channel dashboard on loopback. It shows the service summary, each channel's
-direction, local and remote endpoints, health, retry count, and latest error.
-The actual URL is printed for both foreground and daemon startup. Set
-`[web].enabled = false` to disable the dashboard and URL output.
+The Web status page is enabled by default, and its loopback URL is printed at startup. It shows channel endpoints, health, retries, latest errors, and host-key remediation commands.
 
-Every channel has an **Open local** link built from its `local` endpoint. This
-also applies to `remote->local` channels: the link opens the local service being
-exposed, never the remote bind address.
-
-```toml
-[web]
-enabled = true   # default: true; set false to disable
-port = 9090      # default: 9090; preferred port
-strict = false   # default: false; if occupied, try 9091, 9092, ...
-```
+**Open local** opens the channel's local endpoint. Set `[web].enabled = false` to disable the page; see the [configuration reference](docs/configuration.md) for other options.
 
 ### Credentials
 
-`~/.ssh/config` can't hold passwords or key passphrases. If SSH config alone
-can't authenticate to a host, add an `[auth.<alias>]` block keyed by its alias:
+`~/.ssh/config` can't hold passwords or key passphrases. If SSH config alone can't authenticate to a host, add an `[auth.<alias>]` block keyed by its alias:
 
 ```toml
 [auth.my-db]
@@ -165,23 +152,23 @@ passphrase = "..."          # for encrypted IdentityFile
 
 ```toml
 [reconnection]
-max_retries             = 0     # 0 = unlimited
-initial_delay_secs      = 1
-max_delay_secs          = 30
-use_exponential_backoff = true
+# max_retries             = 0     # default: 0 = unlimited
+# initial_delay_secs      = 1     # default: 1 second
+# max_delay_secs          = 30    # default: 30 seconds
+# use_exponential_backoff = true  # default: true
 ```
 
-Each retry delay includes jitter. After a finite retry cycle is exhausted,
-automatic recovery continues with a second exponential backoff capped at 60
-seconds; a successful session resets both counters. SSH handshakes are
-serialized to avoid reconnect storms.
+Omit this section to use all defaults.
+
+Each retry delay includes jitter. After a finite retry cycle is exhausted, automatic recovery continues with a second exponential backoff capped at 60 seconds; a successful session resets both counters. SSH handshakes are serialized to avoid reconnect storms.
 
 ### More examples
 
 #### Share the tunnel on the local network
 
-Listen on every interface so other LAN machines can use the tunnel (mind your
-firewall):
+**Scenario:** Let other LAN machines use a database tunnel on this machine.
+
+**Configuration:**
 
 ```toml
 [[channels]]
@@ -192,10 +179,13 @@ local     = "0.0.0.0:3306"
 remote    = "3306"
 ```
 
+**Explanation:** The service listens on `0.0.0.0:3306` and forwards connections to `127.0.0.1:3306` on `db-server`. Restrict access with a firewall.
+
 #### Expose a local-network service to the SSH server
 
-With `remote->local` (`ssh -R`), `local` can point to another service reachable
-from this machine instead of loopback:
+**Scenario:** Expose a service on the local network to `edge-server` with `remote->local` (`ssh -R`).
+
+**Configuration:**
 
 ```toml
 [[channels]]
@@ -206,42 +196,34 @@ local     = "192.168.1.50:3000" # bare "3000" means 127.0.0.1:3000
 remote    = "8080"              # edge-server binds 127.0.0.1:8080
 ```
 
-This exposes `192.168.1.50:3000` at `127.0.0.1:8080` on `edge-server`.
-
-To bind `0.0.0.0:8080` on the server, set `remote = "0.0.0.0:8080"` and
-configure `GatewayPorts clientspecified` in the server's `sshd_config`.
+**Explanation:** Connections to `127.0.0.1:8080` on `edge-server` are forwarded to `192.168.1.50:3000`. To accept external connections on the server, set `remote = "0.0.0.0:8080"` and configure `GatewayPorts clientspecified` in `sshd_config`.
 
 Full field reference: [docs/configuration.md](docs/configuration.md).
 
 ## Commands
 
-| Command | What it does |
-|---|---|
-| `start` | Run in the foreground (Ctrl+C to stop). |
-| `start -D` / `--daemon` | Spawn a detached background process. |
-| `stop` | Tell the running process to exit gracefully (via IPC). |
-| `restart` | Stop the running service, then restart it as a daemon. |
-| `status` | Show service state, per-channel health (Connected / Reconnecting / Failed / Stopped), PID, and endpoints. Add `--watch / -w` to refresh every `--interval / -n` seconds (default 2). |
-| `test` | Probe each configured `local->remote` listener to confirm the tunnel is alive. `remote->local` channels are skipped — verify those server-side. |
-| `validate` | Resolve every channel against `~/.ssh/config` and report any problems. |
-| `generate -o config.toml` | Scaffold a `config.toml` from existing SSH config aliases. |
-| `hosts` | Scan SSH config aliases and show whether each host is supported. Use `--format json` for script-friendly output. |
+
+| Command                   | What it does                                                                                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `start`                   | Run in the foreground (Ctrl+C to stop).                                                                                                                                              |
+| `start -D` / `--daemon`   | Spawn a detached background process.                                                                                                                                                 |
+| `stop`                    | Tell the running process to exit gracefully (via IPC).                                                                                                                               |
+| `restart`                 | Stop the running service, then restart it as a daemon.                                                                                                                               |
+| `status`                  | Show service state, per-channel health (Connected / Reconnecting / Failed / Stopped), PID, and endpoints. Add `--watch / -w` to refresh every `--interval / -n` seconds (default 2). |
+| `test`                    | Probe each configured `local->remote` listener to confirm the tunnel is alive. `remote->local` channels are skipped — verify those server-side.                                      |
+| `validate`                | Resolve every channel against `~/.ssh/config` and report any problems.                                                                                                               |
+| `generate -o config.toml` | Scaffold a `config.toml` from existing SSH config aliases.                                                                                                                           |
+| `hosts`                   | Scan SSH config aliases and show whether each host is supported. Use `--format json` for script-friendly output.                                                                     |
+
 
 All commands accept `--config /path/to/config.toml` to point at a non-default file, and `--debug` for verbose logging.
 
-## Troubleshooting
-
-- **`Channel '...' references host alias '...', but no Host ... block exists`** — typo in `hostname`, or the alias is missing from `~/.ssh/config`.
-- **`Address(es) already in use`** — something else is bound to your `local` address. Change the port or stop the other process. Find the culprit with `lsof -i :PORT` (Linux/macOS) or `netstat -ano | findstr :PORT` (Windows).
-- **Bind ports < 1024** — needs root (Linux/macOS) or Administrator (Windows).
-- **Connection fails** — `ssh <alias>` manually first to isolate SSH config / network / key permission issues.
-- **Encrypted key not unlocking** — set `[auth.<alias>] passphrase = "..."`.
-- **Full debug output** — `ssh-channels-hub start --debug` logs each channel's SSH handshake, channel open, and reconnection attempts.
-
 ## Further reading
 
+- [Troubleshooting](docs/troubleshooting.md) — common connection, host-key, and port issues.
 - [Configuration reference](docs/configuration.md) — every field, every edge case.
 - [How to use](docs/HowToUse.md) — task-oriented walkthroughs.
+- [Connection testing](docs/testing.md) — verify configured channels.
 - [Architecture](docs/architecture.md) — how channels, sessions, and reconnection fit together.
 
 ## License

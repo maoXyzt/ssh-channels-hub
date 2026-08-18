@@ -1,388 +1,302 @@
-# 工作流程文档
+# Workflows / 工作流程文档
 
-## 1. 应用程序启动流程
+> English | [中文](#中文)
 
-### 1.1 初始化阶段
+## English
 
-```
-1. 解析命令行参数
-   ├── 命令类型 (start/stop/restart/status/validate)
-   ├── 配置文件路径 (可选)
-   └── 调试标志 (可选)
+### 1. Process startup
 
-2. 初始化日志系统
-   ├── 设置日志级别 (根据 --debug 标志)
-   ├── 配置日志格式
-   └── 初始化 tracing subscriber
-
-3. 加载配置文件
-   ├── 确定配置文件路径
-   │   ├── 使用 --config 指定的路径
-   │   └── 或使用默认路径
-   ├── 读取文件内容
-   ├── 解析 TOML
-   └── 验证配置有效性
+```text
+Parse CLI
+  -> initialize tracing
+  -> resolve config.toml and SSH config paths
+  -> dispatch the selected command
 ```
 
-### 1.2 命令处理流程
+`--debug` selects verbose logging. `--config` disables default config-file
+discovery and uses the supplied path.
 
-#### Start 命令
+### 2. Command workflows
 
-```
-1. 加载配置
-   ↓
-2. 创建 ServiceManager
-   ↓
-3. 调用 ServiceManager::start()
-   ├── 设置状态为 "Starting"
-   ├── 遍历所有 channels 配置
-   │   ├── 创建 SshManager
-   │   ├── 调用 SshManager::start()
-   │   └── 记录启动结果
-   ├── 更新状态为 "Running" 或 "Error"
-   └── 返回结果
-   ↓
-4. 如果前台模式（默认）
-   ├── 绑定 IPC 监听（动态端口），写入 .port、.pid
-   ├── 等待 Ctrl+C 信号
-   └── 调用 ServiceManager::stop()，清理 .port、.pid
-   ↓
-5. 如果 daemon 模式（start -D / --daemon）
-   ├── 子进程以非 daemon 方式启动，绑定 IPC，写入 .port、.pid
-   ├── 父进程退出
-   └── 子进程持续运行直至收到 stop 或崩溃
+#### `start`
+
+```text
+Load and resolve configuration
+  -> reject occupied local listeners
+  -> create ServiceManager
+  -> group compatible channels by SSH route
+  -> start one SshManager per group
+  -> start IPC and, when enabled, the Web status page
+  -> write runtime PID and port files
+  -> wait for Ctrl+C, IPC stop, or task failure
+  -> stop managers and remove runtime files
 ```
 
-#### Stop 命令
+Foreground mode remains attached to the terminal. `start -D` spawns a detached
+child that runs the same service workflow.
 
-```
-1. 读取 .port 文件（与 --config 同目录）
-   ↓
-2. 通过 TCP 连接 IPC 端口，发送 "stop\n"
-   ↓
-3. 守护进程收到后取消 CancellationToken，执行 ServiceManager::stop()
-   ├── 设置状态为 "Stopping"
-   ├── 遍历所有 SshManager，发送关闭信号
-   ├── 关闭本地 TCP 监听、等待任务结束
-   ├── 删除 .port、.pid
-   └── 进程退出
-   ↓
-4. 若 .port 不存在或连接失败，则仅尝试删除 .port、.pid
-```
+#### `stop`
 
-#### Restart 命令
+The command reads the runtime IPC port, sends `stop`, and waits for the running
+process to cancel its tasks and remove runtime files. Stale files are cleaned up
+when no process can be reached.
 
-```
-1. 若 .port 存在，通过 IPC 发送 stop，等待守护进程退出
-   ↓
-2. 清理 .port、.pid（若仍存在）
-   ↓
-3. 以 daemon 方式重新启动（spawn 子进程执行 start）
-```
+#### `restart`
 
-#### Status 命令
+The command stops the current daemon when present, waits for shutdown, cleans
+stale runtime files, and starts a new daemon.
 
-```
-1. 读取 .port 文件，通过 TCP 连接 IPC，发送 "status\n"
-   ↓
-2. 若连接成功，接收 TOML 格式状态（state, active_channels, total_channels）
-   ↓
-3. 显示状态信息
-   ├── 服务状态（含 emoji）
-   ├── 活动/总 channels 数
-   ├── 配置文件路径、PID
-   └── 已配置 channel 列表（name, direction, local <-> remote）
-   ↓
-4. 若 .port 不存在或连接失败，显示 "Stopped" 及配置路径
-```
+#### `status`
 
-#### Validate 命令
+The command queries IPC for the service state and per-channel snapshots. It
+prints directions, endpoints, health, retry attempts, and recent failures.
+`--watch` repeats the query at the configured interval.
 
-```
-1. 加载配置文件
-   ↓
-2. 验证配置
-   ├── 检查 TOML 语法
-   ├── 检查必需字段
-   ├── 检查字段类型
-   └── 检查 channel 名称唯一性
-   ↓
-3. 显示验证结果
+#### `validate`
+
+The command parses TOML, resolves every SSH alias and auth method, validates
+directions and endpoints, and performs jump-host key-file and `known_hosts`
+preflight checks without starting listeners.
+
+#### `generate`, `hosts`, and `test`
+
+- `generate` turns SSH config aliases into commented channel templates.
+- `hosts` reports which aliases are supported and why.
+- `test` probes active `local->remote` listeners; `remote->local` channels are
+  skipped and must be tested server-side.
+
+### 3. SSH route startup
+
+```text
+SshManager::start
+  -> mark channels Connecting
+  -> acquire the global handshake permit
+  -> connect and authenticate each ProxyJump hop
+  -> connect to the target through the resulting stream
+  -> verify the target host key
+  -> authenticate the target
+  -> register all channel services on the shared session
 ```
 
-## 2. SSH 连接建立流程
+Host keys are checked against `~/.ssh/known_hosts`. Unknown or changed keys are
+permanent failures, and the error includes a remediation command for the CLI
+and Web page.
 
-### 2.1 连接阶段
+### 4. Forwarding workflows
 
-```
-1. SshManager::start() 被调用
-   ↓
-2. 创建关闭信号通道
-   ↓
-3. 启动独立任务
-   ↓
-4. 调用 connect_and_manage_channels()
-   ├── 构建重试策略
-   └── 使用 backon 重试连接
-   ↓
-5. establish_connection()
-   ├── 创建 SSH 客户端配置
-   ├── 创建 ClientHandler
-   ├── 连接到服务器
-   │   └── russh::client::connect()
-   ├── 认证
-   │   ├── 密码认证
-   │   └── 密钥认证
-   └── 在共享 session 上注册组内 channels
-       ├── Direct-TCPIP 本地监听
-       └── Forwarded-TCPIP 远端监听
+#### `local->remote` (`ssh -L`)
+
+```text
+Bind local TcpListener
+  -> mark channel Connected
+  -> accept a local connection
+  -> open direct-tcpip to the remote endpoint
+  -> copy bytes in both directions
+  -> close the SSH channel when the stream ends
 ```
 
-### 2.2 channel 管理流程
+Each accepted TCP connection gets its own SSH channel while sharing the route's
+SSH session.
 
-#### Forwarded-TCPIP channel
+#### `remote->local` (`ssh -R`)
 
-```
-1. 调用 tcpip_forward() 注册远端监听
-   ↓
-2. 按实际远端端口记录本地目标
-   ↓
-3. 收到 forwarded-tcpip 回调时连接本地目标
-   ↓
-4. 使用 copy_bidirectional 双向转发
-```
-
-#### Direct-TCPIP channel
-
-```
-1. 在本地绑定 TcpListener（local.host:local.port）
-   ↓
-2. 循环 accept 新连接
-   ↓
-3. 对每个新连接：
-   ├── channel_open_direct_tcpip(目标地址, 目标端口, 源地址, 源端口)
-   ├── 使用 copy_bidirectional 在本地 TcpStream 与 ChannelStream 间转发数据
-   └── 连接关闭时关闭 channel
-   ↓
-4. 收到停止信号时取消 accept 循环并退出
+```text
+Request tcpip-forward on the server
+  -> record the actual remote bind port
+  -> mark channel Connected
+  -> receive a forwarded-tcpip callback
+  -> connect to the configured local endpoint
+  -> copy bytes in both directions
 ```
 
-## 3. 重连流程
+Remote forwards with conflicting nonzero bind ports are separated into
+different sessions so callbacks can be routed unambiguously.
 
-### 3.1 连接断开检测
+### 5. Reconnection
 
-```
-连接/channel 错误发生
-   ↓
-错误被捕获
-   ↓
-记录错误日志
-   ↓
-返回到重连逻辑
-```
-
-### 3.2 重连执行
-
-```
-1. 计算重试延迟
-   ├── 指数退避策略
-   │   └── delay = min(initial * 2^attempt, max_delay)
-   └── 固定间隔策略
-       └── delay = initial_delay
-   └── 每次延迟加入 jitter
-   ↓
-2. 检查重试限制
-   ├── 如果 max_retries > 0
-   │   └── 检查是否超过限制
-   └── 如果 max_retries == 0
-       └── 无限重试
-   ↓
-3. 等待延迟时间
-   ↓
-4. 记录重试日志
-   ↓
-5. 重新建立连接
-   └── 回到连接建立流程
-   ↓
-6. 有限轮次耗尽时,进入最高 60 秒的 jitter 指数退避后开始新一轮
-   └── session 成功建立后重置连续失败次数和外层退避
+```text
+Retryable connection/session failure
+  -> mark channels Reconnecting
+  -> wait using configured backoff plus jitter
+  -> serialize the next SSH handshake
+  -> rebuild the session and all channel services
 ```
 
-### 3.3 重连策略示例
+`max_retries = 0` retries indefinitely within one cycle. After a finite cycle
+is exhausted, recovery continues with a second jittered exponential backoff
+capped at 60 seconds. A successful session resets both levels.
 
-**指数退避** (initial=1s, max=30s):
+Authentication, host-key, and permanent channel errors are marked `Failed`
+instead of being retried.
 
-```
-尝试 1: 等待 1s
-尝试 2: 等待 2s
-尝试 3: 等待 4s
-尝试 4: 等待 8s
-尝试 5: 等待 16s
-尝试 6+: 等待 30s (上限)
-```
+### 6. Status delivery
 
-**固定间隔** (delay=5s):
+Each `SshManager` updates shared per-channel health cells. `ServiceManager`
+aggregates snapshots for two consumers:
 
-```
-尝试 1: 等待 5s
-尝试 2: 等待 5s
-尝试 3: 等待 5s
-...
-```
+- IPC serializes status for `status` and `status --watch`.
+- The loopback Web server renders the latest snapshot for each request.
 
-## 4. 关闭流程
+### 7. Shutdown
 
-### 4.1 正常关闭
-
-```
-1. 收到关闭信号 (Ctrl+C 或 stop 命令)
-   ↓
-2. ServiceManager::stop()
-   ├── 设置状态为 "Stopping"
-   ├── 遍历所有 SshManager
-   │   └── SshManager::stop()
-   │       └── 发送关闭信号到任务
-   └── 清空管理器列表
-   ↓
-3. 每个 SshManager 任务
-   ├── 收到关闭信号
-   ├── 关闭 SSH 连接
-   ├── 清理资源
-   └── 退出任务
-   ↓
-4. 设置状态为 "Stopped"
-   ↓
-5. 退出应用程序
+```text
+Ctrl+C or IPC stop
+  -> cancel the service token
+  -> stop each SshManager
+  -> cancel listeners and forwarding tasks
+  -> close SSH sessions
+  -> mark channels Stopped
+  -> remove PID, IPC-port, and Web-port files
 ```
 
-### 4.2 异常关闭
+### 8. Concurrency and error boundaries
 
-```
-1. 未捕获的 panic
-   ↓
-2. 任务终止
-   ↓
-3. 连接自动关闭
-   ↓
-4. 其他 channels 继续运行
-   ↓
-5. 服务状态可能变为 "Error"
-```
+- Route groups run independently in Tokio tasks.
+- Compatible channels share one session; local connections use child tasks.
+- SSH handshakes are globally limited to one at a time.
+- Locks protect short state updates and are not held across network `.await`s.
+- Configuration errors stop startup; a route failure does not stop unrelated
+  route groups.
 
-## 5. 并发执行流程
+## 中文
 
-### 5.1 多 channels 并发
+### 1. 进程启动
 
-```
-主任务
-  ├── SSH 路由组 1 ──> 共享 session + 多个 channel 任务
-  ├── SSH 路由组 2 ──> 共享 session + 多个 channel 任务
-  └── SSH 路由组 N ──> 共享 session + 多个 channel 任务
+```text
+解析 CLI
+  -> 初始化 tracing
+  -> 确定 config.toml 和 SSH config 路径
+  -> 分发所选命令
 ```
 
-### 5.2 channel 内部并发
+`--debug` 打开详细日志。指定 `--config` 后不再搜索默认配置路径。
 
-```
-SshManager 任务
-  ├── 连接管理任务
-  ├── channel 数据处理任务 1
-  ├── channel 数据处理任务 2
-  └── 关闭信号监听任务
-```
+### 2. 命令流程
 
-### 5.3 同步点
+#### `start`
 
-- **启动**: 各路由组并行管理,SSH 握手通过全局单 permit 串行执行
-- **停止**: 等待所有 channels 完成关闭
-- **状态查询**: 需要锁定状态进行读取
-
-## 6. 错误处理流程
-
-### 6.1 错误分类和处理
-
-```
-配置错误
-  └── 立即失败，不启动服务
-
-连接错误
-  └── 临时性错误 → jitter 退避后重试
-
-认证/Host Key 错误
-  └── 记录错误，停止该路由组自动重试
-
-channel 错误
-  └── 标记该 channel 失败,组内其他 channel 继续
+```text
+加载并解析配置
+  -> 拒绝已占用的本地监听地址
+  -> 创建 ServiceManager
+  -> 按 SSH 路由分组兼容 channels
+  -> 每组启动一个 SshManager
+  -> 启动 IPC，以及启用时的 Web 状态页
+  -> 写入 PID 和端口运行时文件
+  -> 等待 Ctrl+C、IPC stop 或任务失败
+  -> 停止 managers 并删除运行时文件
 ```
 
-### 6.2 错误传播
+前台模式保持连接终端；`start -D` 启动脱离终端的子进程，执行相同的服务流程。
 
-```
-底层错误 (russh::Error)
-   ↓
-转换为 AppError
-   ↓
-添加上下文信息
-   ↓
-记录日志
-   ↓
-返回给调用者
-   ↓
-决定是否重试
-```
+#### `stop`
 
-## 7. 日志记录流程
+读取运行时 IPC 端口并发送 `stop`。运行中的进程取消任务、关闭服务并删除运行时
+文件；无法连接进程时会清理陈旧文件。
 
-### 7.1 日志级别使用
+#### `restart`
 
-- **trace**: 详细的函数调用和状态变化
-- **debug**: channel 消息、连接细节
-- **info**: 重要事件（连接建立、channel 打开）
-- **warn**: 非致命问题（连接关闭、重连）
-- **error**: 错误条件（连接失败、认证失败）
+停止已有 daemon，等待退出并清理陈旧运行时文件，然后启动新的 daemon。
 
-### 7.2 结构化日志
+#### `status`
 
-```
-info!(
-    channel = %config.name,    // channel 名称
-    host = %config.host,       // host 地址
-    port = config.port,        // 端口号
-    "Establishing SSH connection"
-)
-```
+通过 IPC 查询服务状态和每条 channel 的快照，展示方向、endpoint、健康状态、
+重试次数和最近错误。`--watch` 按指定间隔重复查询。
 
-### 7.3 日志输出
+#### `validate`
 
-- **控制台**: 默认输出到 stderr
-- **文件**: 未来可能支持日志文件
-- **格式**: 由 tracing-subscriber 控制
+解析 TOML，解析每个 SSH alias 和认证方式，校验 direction 与 endpoint，并在不启动
+监听器的情况下检查跳板密钥文件和 `known_hosts`。
 
-## 8. 性能优化流程
+#### `generate`、`hosts` 和 `test`
 
-### 8.1 资源管理
+- `generate` 根据 SSH config alias 生成注释状态的 channel 模板。
+- `hosts` 报告 alias 是否受支持及原因。
+- `test` 探测运行中的 `local->remote` 本地监听；`remote->local` 需在服务器端验证。
 
-```
-连接建立
-  ├── 使用 Arc 共享配置（避免复制）
-  ├── 及时释放不需要的资源
-  └── 使用有界通道（防止内存泄漏）
+### 3. SSH 路由启动
+
+```text
+SshManager::start
+  -> 将 channels 标记为 Connecting
+  -> 获取全局握手许可
+  -> 依次连接并认证 ProxyJump 跳板
+  -> 通过最终 stream 连接目标
+  -> 校验目标主机密钥
+  -> 认证目标
+  -> 在共享 session 上注册所有 channel 服务
 ```
 
-### 8.2 并发优化
+目标和跳板均严格校验 `~/.ssh/known_hosts`。未知或已变化的密钥属于永久失败，
+错误中包含供 CLI 和 Web 页面展示的处置命令。
 
-```
-异步 I/O
-  ├── 所有网络操作异步
-  ├── 避免阻塞操作
-  └── 使用 tokio::spawn_blocking 处理阻塞操作
+### 4. 转发流程
+
+#### `local->remote`（`ssh -L`）
+
+```text
+绑定本地 TcpListener
+  -> 将 channel 标记为 Connected
+  -> 接受本地连接
+  -> 向远端 endpoint 打开 direct-tcpip
+  -> 双向复制数据
+  -> stream 结束时关闭 SSH channel
 ```
 
-### 8.3 重连优化
+每个 TCP 连接使用独立 SSH channel，但共享该路由的 SSH session。
 
+#### `remote->local`（`ssh -R`）
+
+```text
+向服务器请求 tcpip-forward
+  -> 记录实际远端绑定端口
+  -> 将 channel 标记为 Connected
+  -> 接收 forwarded-tcpip 回调
+  -> 连接配置的本地 endpoint
+  -> 双向复制数据
 ```
-智能重试
-  ├── 指数退避避免资源浪费
-  ├── jitter 避免同步重连
-  ├── 轮次耗尽后最高 60 秒继续恢复
-  └── SSH 握手单并发
+
+使用相同非零远端端口的冲突转发会拆到不同 session，避免回调路由歧义。
+
+### 5. 重连流程
+
+```text
+可重试的连接或 session 失败
+  -> 将 channels 标记为 Reconnecting
+  -> 按配置的 backoff 和 jitter 等待
+  -> 串行执行下一次 SSH 握手
+  -> 重建 session 和全部 channel 服务
 ```
+
+`max_retries = 0` 表示单轮无限重试。有限轮次耗尽后，使用最高 60 秒的第二层
+jitter 指数退避继续恢复；session 成功后两层状态都会重置。
+
+认证、主机密钥和永久 channel 错误会标记为 `Failed`，不自动重试。
+
+### 6. 状态传递
+
+每个 `SshManager` 更新共享的 channel 健康状态，`ServiceManager` 汇总快照供两个
+消费者使用：
+
+- IPC 为 `status` 和 `status --watch` 序列化状态。
+- loopback Web 服务在每次请求时渲染最新快照。
+
+### 7. 关闭流程
+
+```text
+Ctrl+C 或 IPC stop
+  -> 取消 service token
+  -> 停止每个 SshManager
+  -> 取消 listener 和转发任务
+  -> 关闭 SSH session
+  -> 将 channels 标记为 Stopped
+  -> 删除 PID、IPC 端口和 Web 端口文件
+```
+
+### 8. 并发与错误边界
+
+- SSH 路由组在独立 Tokio 任务中运行。
+- 兼容 channels 共享 session；本地连接使用子任务。
+- SSH 握手全局限制为单并发。
+- 锁只保护短暂状态更新，不跨网络 `.await`。
+- 配置错误会阻止启动；单个路由失败不会停止无关路由组。

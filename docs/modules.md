@@ -1,370 +1,272 @@
-# 模块设计文档
+# Module Design / 模块设计文档
 
-## 1. 模块概览
+> English | [中文](#中文)
 
-项目采用模块化设计，每个模块负责特定的功能领域。
+## English
 
-```
+### 1. Module map
+
+```text
 src/
-├── main.rs      # 程序入口，CLI 处理
-├── cli.rs       # 命令行接口定义
-├── config.rs    # 配置加载和解析
-├── error.rs     # 错误类型定义
-├── service.rs   # 服务管理
-└── ssh.rs       # SSH 连接和 channel 管理
+|- main.rs        CLI dispatch, daemon, IPC, runtime orchestration
+|- lib.rs         public module exports
+|- cli.rs         clap command definitions
+|- config.rs      TOML models and runtime channel resolution
+|- ssh_config.rs  OpenSSH config parsing and default paths
+|- host_check.rs  SSH alias support analysis
+|- port_check.rs  listener and tunnel probes
+|- service.rs     service lifecycle and route grouping
+|- ssh.rs         SSH sessions, forwarding, verification, reconnection
+|- web.rs         loopback Web status page
+|- ui.rs          terminal rendering
+`- error.rs       shared application errors
 ```
 
-## 2. 模块详细说明
+### 2. Responsibilities
 
-### 2.1 main.rs
+#### `main.rs`
 
-**职责**: 程序入口点，协调各个模块
+Initializes logging, dispatches commands, manages foreground and daemon modes,
+stores runtime files, serves IPC requests, and coordinates `ServiceManager` and
+the Web status server.
 
-**主要功能**:
+#### `lib.rs`
 
-- 初始化日志系统
-- 解析 CLI 参数
-- 路由命令到对应的处理函数
-- 管理应用程序生命周期
+Exports the modules used by integration tests and downstream Rust code.
 
-**关键函数**:
+#### `cli.rs`
 
-- `main()`: 异步主函数
-- `init_logging()`: 初始化 tracing 日志系统
-- `handle_start()`: 处理启动命令
-- `handle_stop()`: 处理停止命令
-- `handle_restart()`: 处理重启命令
-- `handle_status()`: 处理状态查询命令
-- `handle_validate()`: 处理配置验证命令
+Defines global options and the `start`, `stop`, `restart`, `status`, `validate`,
+`generate`, `hosts`, and `test` subcommands with `clap`.
 
-### 2.2 cli.rs
+#### `config.rs`
 
-**职责**: 定义命令行接口
+Deserializes `config.toml`, validates endpoints and directions, applies auth
+overrides, resolves SSH aliases and jump chains, groups runtime values into
+`ChannelConfig`, and generates configuration scaffolds.
 
-**数据结构**:
+Key types include `AppConfig`, `ConnectionConfig`, `ChannelConfig`, `Endpoint`,
+`Direction`, `AuthConfig`, `JumpHopConfig`, `WebConfig`, and
+`ReconnectionConfig`.
 
-```rust
-pub struct Cli {
-    pub command: Commands,
-    pub config: Option<PathBuf>,
-    pub debug: bool,
-}
+Authentication resolution is deterministic:
 
-pub enum Commands {
-    Start { foreground: bool },
-    Stop,
-    Restart,
-    Status,
-    Validate { config: Option<PathBuf> },
-}
+1. `[auth.<alias>].password` overrides key authentication.
+2. Otherwise, the SSH config `IdentityFile` is used with an optional passphrase.
+3. If neither exists, configuration fails before startup.
+
+#### `ssh_config.rs`
+
+Parses the supported OpenSSH directives, applies `Host *` defaults, resolves
+`ProxyJump` and the supported `ProxyCommand` form, expands key paths, and
+provides default SSH config, identity-file, and `known_hosts` paths.
+
+#### `host_check.rs`
+
+Analyzes SSH aliases for the `hosts` command and reports supported,
+unsupported, and warning states without starting a connection.
+
+#### `port_check.rs`
+
+Checks whether listener addresses are available and probes configured tunnel
+endpoints for the `test` command.
+
+#### `service.rs`
+
+Groups compatible channels by SSH route, owns their `SshManager` instances,
+handles start and stop transitions, and aggregates `ChannelStatus` snapshots.
+Channels share a session only when target, user, authentication, jump chain,
+and remote-forward routing are compatible.
+
+#### `ssh.rs`
+
+Connects through jump chains, verifies all host keys, authenticates targets,
+opens direct and forwarded TCP/IP channels, maps failures to retry decisions,
+tracks per-channel health, and reconnects route groups with backoff and jitter.
+
+`SshManager` is the main boundary. `ClientHandler` handles the terminal session
+and remote-forward callbacks; `JumpClientHandler` handles verified jump-host
+sessions.
+
+#### `web.rs`
+
+Binds the loopback status server, renders service and channel state, builds
+local endpoint links, escapes dynamic HTML, and displays host-key remediation
+commands from channel errors.
+
+#### `ui.rs`
+
+Centralizes terminal styles, badges, tables, status output, and color disabling.
+
+#### `error.rs`
+
+Defines `AppError` and the shared `Result<T>` alias. Structured variants separate
+configuration, connection, authentication, channel, I/O, and service failures.
+
+### 3. Dependencies
+
+```text
+main
+|- cli
+|- config --> ssh_config
+|- host_check --> ssh_config
+|- port_check
+|- service --> ssh --> config
+|- web --> service
+|- ui --> service
+`- error (shared by runtime modules)
 ```
 
-**设计特点**:
+### 4. Design rules
 
-- 使用 `clap` 的 derive 宏自动生成 CLI
-- 支持全局选项（`--config`, `--debug`）
-- 子命令模式，清晰的命令结构
+- Keep parsing, orchestration, SSH transport, and presentation in separate
+  modules.
+- Resolve configuration before starting network tasks.
+- Expose the smallest public API needed across module boundaries.
+- Keep I/O asynchronous and avoid holding locks across `.await`.
+- Use structured errors to classify permanent and retryable failures.
 
-### 2.3 config.rs
+### 5. Extension points
 
-**职责**: 加载 `config.toml`、解析、并联合 `~/.ssh/config` 构造运行时 ChannelConfig。
+- Channel types: extend configuration parameters and the forwarding branch in
+  `ssh.rs`.
+- Authentication: add an `AuthConfig` variant and terminal authentication path.
+- Reconnection: extend `ReconnectionConfig` and the route-group retry loop.
+- Metrics: consume `ServiceStatus` snapshots or add a dedicated exporter.
 
-host info(HostName / User / Port / IdentityFile / ProxyJump)由 `ssh_config.rs` 从 `~/.ssh/config` 读出,`config.rs` 只负责 channels、auth 覆盖、重连策略,以及把 `ProxyJump` 链解析成跳板配置。
+### 6. Testing
 
-**核心数据结构**:
+- Unit-test parsers, endpoint validation, route grouping, error mapping, HTML
+  escaping, and remediation command formatting.
+- Test async lifecycle and reconnection with deterministic time where possible.
+- Keep live SSH-server tests as integration tests because they require external
+  infrastructure.
 
-```rust
-pub struct AppConfig {
-    pub ssh_config: Option<PathBuf>,           // 覆盖 ~/.ssh/config 路径(可选)
-    pub channels: Vec<ConnectionConfig>,
-    pub auth: HashMap<String, AuthOverride>,   // 键为 SSH config 的 Host alias
-    pub reconnection: ReconnectionConfig,
-}
+## 中文
 
-pub struct ConnectionConfig {
-    pub name: String,
-    pub hostname: String,                      // SSH config 里的 Host alias
-    pub direction: Direction,                  // "local->remote" 或 "remote->local"
-    pub local: Endpoint,                       // 本机这一侧的 host:port
-    pub remote: Endpoint,                      // 远端这一侧的 host:port
-}
+### 1. 模块概览
 
-pub enum Direction {
-    LocalToRemote,                             // ssh -L: 本机监听,流量出
-    RemoteToLocal,                             // ssh -R: 服务器绑定,流量入
-}
-
-pub struct Endpoint {
-    pub host: String,                          // 默认 "127.0.0.1"
-    pub port: u16,
-}
-
-pub struct AuthOverride {
-    pub password: Option<String>,              // SSH config 存不了的密码
-    pub passphrase: Option<String>,            // IdentityFile 的 passphrase
-}
-
-// Runtime channel configuration (built from config.toml + ~/.ssh/config)
-pub struct ChannelConfig {
-    pub name: String,
-    pub host: String,                          // resolved from SSH HostName
-    pub port: u16,                             // resolved from SSH Port, default 22
-    pub username: String,                      // resolved from SSH User
-    pub auth: AuthConfig,
-    pub params: ChannelTypeParams,             // DirectTcpIp / ForwardedTcpIp
-    pub proxy_jumps: Vec<JumpHopConfig>,       // 解析后的 ProxyJump 链(顺序敏感,空 = 直连)
-}
-
-pub enum AuthConfig {
-    Password { password: String },
-    Key { key_path: PathBuf, passphrase: Option<String> },
-}
-
-// 单个跳板的运行时配置。仅来源于 ~/.ssh/config 的 Host 别名 + IdentityFile —
-// `config.toml` 不允许为跳板单独配 auth(跳板只支持 publickey)。
-pub struct JumpHopConfig {
-    pub alias: String,                         // ssh_config 中的 Host alias
-    pub host: String,                          // HostName
-    pub port: u16,                             // Port,默认 22
-    pub username: String,                      // User
-    pub key_path: PathBuf,                     // 显式 IdentityFile > Host * > 唯一默认 key
-}
+```text
+src/
+|- main.rs        CLI 分发、daemon、IPC 和运行时编排
+|- lib.rs         公共模块导出
+|- cli.rs         clap 命令定义
+|- config.rs      TOML 模型和运行时 channel 解析
+|- ssh_config.rs  OpenSSH config 解析和默认路径
+|- host_check.rs  SSH alias 支持状态分析
+|- port_check.rs  监听地址和隧道探测
+|- service.rs     服务生命周期和路由分组
+|- ssh.rs         SSH session、转发、校验和重连
+|- web.rs         loopback Web 状态页
+|- ui.rs          终端渲染
+`- error.rs       共享应用错误
 ```
 
-**主要功能**:
+### 2. 模块职责
 
-- `AppConfig::from_file()`: 加载并反序列化
-- `AppConfig::default_path()`: 获取默认 config.toml 路径
-- `AppConfig::ssh_config_path()`: 计算 SSH config 实际路径(`ssh_config` 字段优先,否则 `~/.ssh/config`)
-- `AppConfig::build_channels()`: 解析 SSH config、按 alias 查表、套用 auth 覆盖、解析 `ProxyJump` 链(`resolve_jump_chain`),构造 `Vec<ChannelConfig>`
-- `AppConfig::generate_scaffold()`: 从 SSH config 条目渲染一份注释掉的 `config.toml` 文本,供 `generate` 子命令使用
-- `check_jump_preflight()`: 跳板环境前置检查 —— IdentityFile 文件是否存在(error)、跳板主机是否在 `~/.ssh/known_hosts`(warning);供 `validate` 命令调用
+#### `main.rs`
 
-**auth 解析规则(`resolve_auth`)**:
+初始化日志、分发命令、管理前台和 daemon 模式、维护运行时文件、处理 IPC，并协调
+`ServiceManager` 与 Web 状态服务。
 
-1. `[auth.<alias>].password` 存在 → 走密码登录,**覆盖** SSH config 的 IdentityFile
-2. 否则 SSH config 的 `IdentityFile` 存在 → 走密钥登录,`[auth.<alias>].passphrase` 附加到密钥上
-3. 否则报错,提示「填一个 password 或者补 IdentityFile」
+#### `lib.rs`
 
-**设计考虑**:
+导出集成测试和下游 Rust 代码使用的模块。
 
-- 单一信息源:host info 完全来自 SSH config,避免与 `~/.ssh/config` 重复维护
-- 配置失败提前暴露:`build_channels` 在 service 启动前调用,任何不一致一次性报出
+#### `cli.rs`
 
-### 2.4 error.rs
+使用 `clap` 定义全局选项以及 `start`、`stop`、`restart`、`status`、`validate`、
+`generate`、`hosts` 和 `test` 子命令。
 
-**职责**: 定义应用程序错误类型
+#### `config.rs`
 
-**错误类型**:
+反序列化 `config.toml`，校验 endpoint 和 direction，应用认证覆盖，解析 SSH alias
+与跳板链，生成运行时 `ChannelConfig`，并生成配置脚手架。
 
-```rust
-pub enum AppError {
-    Config(String),
-    SshConnection(String),
-    SshAuthentication(String),
-    SshChannel(String),
-    Io(std::io::Error),
-    ConfigParse(toml::de::Error),
-    Service(String),
-}
+主要类型包括 `AppConfig`、`ConnectionConfig`、`ChannelConfig`、`Endpoint`、
+`Direction`、`AuthConfig`、`JumpHopConfig`、`WebConfig` 和
+`ReconnectionConfig`。
+
+认证解析顺序固定：
+
+1. `[auth.<alias>].password` 覆盖密钥认证。
+2. 否则使用 SSH config 的 `IdentityFile`，可附加 passphrase。
+3. 两者都没有时，在启动前返回配置错误。
+
+#### `ssh_config.rs`
+
+解析受支持的 OpenSSH directive，应用 `Host *` 默认值，解析 `ProxyJump` 和兼容的
+`ProxyCommand` 写法，展开密钥路径，并提供 SSH config、默认密钥和
+`known_hosts` 路径。
+
+#### `host_check.rs`
+
+为 `hosts` 命令分析 SSH alias，在不建立连接的情况下报告支持、不支持和警告状态。
+
+#### `port_check.rs`
+
+检查监听地址是否可用，并为 `test` 命令探测已配置的隧道 endpoint。
+
+#### `service.rs`
+
+按 SSH 路由分组兼容的 channels，持有对应的 `SshManager`，管理启动和停止状态，
+并汇总 `ChannelStatus` 快照。只有目标、用户、认证、跳板链和远程转发路由兼容时，
+channels 才会共享 session。
+
+#### `ssh.rs`
+
+连接跳板链、校验所有主机密钥、认证目标、打开 direct/forwarded TCP/IP channel、
+将错误映射为重试决策、记录每条 channel 的健康状态，并使用 backoff 和 jitter
+重连路由组。
+
+`SshManager` 是主要边界。`ClientHandler` 处理终点 session 和远程转发回调，
+`JumpClientHandler` 处理已校验的跳板 session。
+
+#### `web.rs`
+
+绑定 loopback 状态服务、渲染服务和 channel 状态、生成本地 endpoint 链接、转义
+动态 HTML，并展示 channel 错误中的主机密钥处置命令。
+
+#### `ui.rs`
+
+集中管理终端样式、badge、表格、状态输出和颜色开关。
+
+#### `error.rs`
+
+定义 `AppError` 和共享的 `Result<T>` 别名，通过结构化 variant 区分配置、连接、
+认证、channel、I/O 和服务错误。
+
+### 3. 模块依赖
+
+```text
+main
+|- cli
+|- config --> ssh_config
+|- host_check --> ssh_config
+|- port_check
+|- service --> ssh --> config
+|- web --> service
+|- ui --> service
+`- error（运行时模块共享）
 ```
 
-**设计特点**:
+### 4. 设计原则
 
-- 使用 `thiserror` 自动实现 `Error` trait
-- 支持错误链（通过 `#[from]` 属性）
-- 提供上下文信息
-- 类型别名 `Result<T>` 简化错误处理
+- 将解析、编排、SSH 传输和展示拆分到不同模块。
+- 在启动网络任务前完成配置解析。
+- 模块间只暴露必要的最小公共 API。
+- I/O 保持异步，不跨 `.await` 持锁。
+- 使用结构化错误区分永久失败和可重试失败。
 
-### 2.5 service.rs
+### 5. 扩展点
 
-**职责**: 管理所有 SSH channels 的服务生命周期
+- Channel 类型：扩展配置参数和 `ssh.rs` 中的转发分支。
+- 认证方式：增加 `AuthConfig` variant 和终点认证路径。
+- 重连策略：扩展 `ReconnectionConfig` 和路由组重试循环。
+- 指标：消费 `ServiceStatus` 快照或增加独立 exporter。
 
-**核心数据结构**:
+### 6. 测试策略
 
-```rust
-pub struct ServiceManager {
-    config: AppConfig,
-    state: Arc<Mutex<ServiceState>>,
-    managers: Arc<Mutex<Vec<SshManager>>>,
-}
-
-pub enum ServiceState {
-    Stopped,
-    Starting,
-    Running,
-    Stopping,
-    Error(String),
-}
-
-// 每条 channel 的实时健康度,由 SshManager 的 connect 任务写入,
-// 由 ServiceManager::status() 读出供 CLI 渲染。
-pub enum ChannelHealth {
-    Stopped,
-    Connecting { attempt: u32 },
-    Connected,
-    Reconnecting { attempt: u32, last_error: String },
-    Failed { error: String },
-}
-
-pub struct ChannelStatus {
-    pub name: String,
-    pub direction: Direction,
-    pub local: String,           // host:port
-    pub remote: String,
-    pub health: ChannelHealth,
-}
-
-pub struct ServiceStatus {
-    pub state: ServiceState,
-    pub channels: Vec<ChannelStatus>,
-}
-```
-
-**主要功能**:
-
-- `start()`: 启动所有 channels
-- `stop()`: 停止所有 channels
-- `restart()`: 重启服务
-- `status()`: 遍历每个 `SshManager.snapshot()`,返回包含每条 channel 实时健康度的 `ServiceStatus`(供 `status` 命令和 `--watch` 模式渲染)
-
-**设计特点**:
-
-- 使用 `Arc<Mutex<>>` 管理共享状态
-- 状态机模式管理服务状态
-- 优雅处理部分 channels 启动失败的情况
-- 提供详细的状态信息
-
-**并发安全**:
-
-- 所有状态访问都通过 `Mutex` 保护
-- 异步操作使用 `tokio::sync::Mutex`
-- 避免死锁的设计模式
-
-### 2.6 ssh.rs
-
-**职责**: 管理单个 SSH 连接和 channel
-
-**核心数据结构**:
-
-```rust
-pub struct SshManager {
-    configs: Vec<ChannelConfig>,
-    reconnection_config: ReconnectionConfig,
-    shutdown_tx: Option<mpsc::Sender<()>>,
-    cancellation_token: Option<CancellationToken>,
-    // 每个 channel 的实时健康度,与连接组任务共享。
-    // 使用 std::sync::Mutex(不跨 await),写者:spawn 任务的状态转移
-    // 与 backon 的 .notify 钩子;读者:SshManager::snapshots()。
-    health: Vec<Arc<std::sync::Mutex<ChannelHealth>>>,
-}
-
-struct ClientHandler { … }         // 共享终点会话 + ssh -R 回调路由
-struct JumpClientHandler { … }     // ProxyJump 跳板专用,严格校验 known_hosts
-```
-
-**主要功能**:
-
-1. **连接管理**:
-   - `establish_connection()`: 走完跳板链 + 终点认证 + 启动 channel-side 服务(listener bind / tcpip-forward)
-   - `connect_via_chain()`: 按顺序把 `ProxyJump` 链全部认证起来,跳板 handle 由调用者持有以保证生命周期
-   - `load_secret_key()` / `load_jump_key()`: 加载私钥(后者强制拒绝 passphrase 加密的 key)
-
-2. **重连逻辑**:
-   - `connect_and_manage_channels()`: 普通重试使用带 jitter 的 `backon` 退避;有限轮次耗尽后,外层用最高 60 秒的 jitter 指数退避继续恢复
-
-3. **生命周期管理**:
-   - `start()`: spawn 出连接任务,初始化 `health = Connecting{1}`
-   - `stop()`: shutdown + cancel,把 `health` 置 `Stopped`
-   - `snapshots()`: 同步返回组内每个 channel 的 `ChannelStatus`,供 `ServiceManager::status` 调用
-
-4. **状态写入点**(谁把 ChannelHealth 设成谁):
-   - 循环入口 → `Connecting{1}`
-   - backon `.notify` 钩子 → `Reconnecting{n, err}`
-   - `run_direct_tcpip_listener` 在 `TcpListener::bind` 成功后 → `Connected`
-   - `register_forwarded_tcpip` 在 `tcpip_forward` 返回 Ok 后 → `Connected`
-   - 永久认证 / Host Key / channel 错误 → `Failed{err}`(不自动重试)
-   - shutdown / cancel → `Stopped`
-
-**设计特点**:
-
-- 每个管理器运行在独立任务中
-- 使用 `tokio::select!` 处理关闭信号
-- 自动重连机制
-- 支持多种 channel 类型
-
-**重连策略**:
-
-- 指数退避（默认）
-- 固定间隔（可选）
-- 可配置最大重试次数
-- 可配置延迟范围
-- 普通与轮次耗尽退避均带 jitter
-- SSH 握手全局单并发
-
-## 3. 模块间依赖关系
-
-```
-main.rs
-  ├── cli.rs (CLI 定义)
-  ├── config.rs (配置加载)
-  ├── service.rs (服务管理)
-  │     └── ssh.rs (SSH 连接)
-  │           └── config.rs (配置结构)
-  └── error.rs (错误类型)
-```
-
-## 4. 模块接口设计原则
-
-### 4.1 单一职责原则
-
-每个模块只负责一个明确的功能领域。
-
-### 4.2 最小接口原则
-
-模块只暴露必要的公共 API，内部实现细节隐藏。
-
-### 4.3 错误处理一致性
-
-所有模块使用统一的错误类型 (`AppError`)，通过 `Result<T>` 类型别名简化。
-
-### 4.4 异步优先
-
-所有 I/O 操作都是异步的，使用 `async/await` 语法。
-
-## 5. 扩展点
-
-### 5.1 添加新的 channel 类型
-
-在 `ssh.rs` 中添加新的 channel 打开函数，在 `establish_connection()` 中添加分支。
-
-### 5.2 添加新的认证方式
-
-在 `config.rs` 的 `AuthConfig` 中添加新变体，在 `ssh.rs` 的认证逻辑中添加处理。
-
-### 5.3 自定义重连策略
-
-在 `config.rs` 中添加配置选项，在 `ssh.rs` 中实现策略逻辑。
-
-### 5.4 添加监控和指标
-
-可以在 `service.rs` 中添加指标收集，或创建新的 `metrics.rs` 模块。
-
-## 6. 测试策略
-
-### 6.1 单元测试
-
-- 配置解析测试 (`config.rs`)
-- 错误处理测试 (`error.rs`)
-- 状态管理测试 (`service.rs`)
-
-### 6.2 集成测试
-
-- SSH 连接测试（需要测试服务器）
-- 重连逻辑测试
-- CLI 命令测试
-
-### 6.3 模拟测试
-
-- 使用 mock SSH 服务器测试连接逻辑
-- 模拟网络故障测试重连
+- 单元测试 parser、endpoint 校验、路由分组、错误映射、HTML 转义和处置命令格式。
+- 对异步生命周期和重连尽量使用可控时间测试。
+- 真实 SSH server 测试保留为集成测试，因为它依赖外部基础设施。
