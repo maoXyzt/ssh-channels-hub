@@ -428,7 +428,7 @@ mod tests {
           local: "127.0.0.1:3306".into(),
           remote: "127.0.0.1:3306".into(),
           health: ChannelHealth::Failed {
-            error: "Verify the fingerprint, then run `ssh-keyscan -p 2222 db.example.com >> ~/.ssh/known_hosts`.".into(),
+            error: "Verify the fingerprint, then run `ssh-keyscan -p 2222 'db.example.com' >> ~/.ssh/known_hosts`.".into(),
           },
         }],
       },
@@ -438,7 +438,9 @@ mod tests {
       },
     );
 
-    assert!(page.contains("ssh-keyscan -p 2222 db.example.com &gt;&gt; ~/.ssh/known_hosts"));
+    assert!(
+      page.contains("ssh-keyscan -p 2222 &#39;db.example.com&#39; &gt;&gt; ~/.ssh/known_hosts")
+    );
   }
 
   #[tokio::test]
