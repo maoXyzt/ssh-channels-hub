@@ -1,4 +1,4 @@
-# sSSH Channels Hub
+# SSH Channels Hub
 
 > English | [中文](./README-zh.md)
 
@@ -18,7 +18,7 @@ back when I open the lid."*
 - **No host config duplication**: host info (`HostName` / `User` / `Port` / `IdentityFile`) is read straight from `~/.ssh/config` — you reference aliases.
 - **ProxyJump aware**: chain through bastions defined in `~/.ssh/config` — using
 alias-only references, public-key authentication, and strict `known_hosts`
-checks for targets and jumps. See [docs/configuration.md §3.4](docs/configuration.md#34-host-info-从哪里来).
+checks for targets and jumps. See [docs/configuration.md §3.4](docs/configuration.md#34-where-host-information-comes-from).
 - **Auto-reconnect**: compatible tunnels share one SSH session; a dropped route reconnects with jittered backoff without disturbing other routes.
 - **Both directions in one schema**: local-to-remote (`ssh -L`) and remote-to-local (`ssh -R`).
 - **Foreground or daemon**: `start` attaches to the terminal, `start -D` detaches; `stop` / `restart` / `status` talk to the running process via IPC.

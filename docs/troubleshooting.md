@@ -59,7 +59,7 @@ allows TCP forwarding. `remote->local` channels must be tested server-side.
 open, and reconnection attempts.
 
 Detailed validation messages are listed in the
-[configuration error reference](./configuration.md#6-配置错误参考).
+[configuration error reference](./configuration.md#6-configuration-error-reference).
 
 ## 中文
 

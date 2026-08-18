@@ -75,8 +75,8 @@ endpoints for the `test` command.
 
 Groups compatible channels by SSH route, owns their `SshManager` instances,
 handles start and stop transitions, and aggregates `ChannelStatus` snapshots.
-Channels share a session only when target, user, authentication, jump chain,
-and remote-forward routing are compatible.
+Channels share a session only when target host, SSH port, user, authentication,
+jump chain, and remote-forward routing are compatible.
 
 #### `ssh.rs`
 
@@ -84,7 +84,7 @@ Connects through jump chains, verifies all host keys, authenticates targets,
 opens direct and forwarded TCP/IP channels, maps failures to retry decisions,
 tracks per-channel health, and reconnects route groups with backoff and jitter.
 
-`SshManager` is the main boundary. `ClientHandler` handles the terminal session
+`SshManager` is the main boundary. `ClientHandler` handles the target SSH session
 and remote-forward callbacks; `JumpClientHandler` handles verified jump-host
 sessions.
 
@@ -210,8 +210,8 @@ src/
 #### `service.rs`
 
 按 SSH 路由分组兼容的 channels，持有对应的 `SshManager`，管理启动和停止状态，
-并汇总 `ChannelStatus` 快照。只有目标、用户、认证、跳板链和远程转发路由兼容时，
-channels 才会共享 session。
+并汇总 `ChannelStatus` 快照。只有目标 host、SSH 端口、用户、认证、跳板链和远程
+转发路由兼容时，channels 才会共享 session。
 
 #### `ssh.rs`
 
@@ -219,7 +219,7 @@ channels 才会共享 session。
 将错误映射为重试决策、记录每条 channel 的健康状态，并使用 backoff 和 jitter
 重连路由组。
 
-`SshManager` 是主要边界。`ClientHandler` 处理终点 session 和远程转发回调，
+`SshManager` 是主要边界。`ClientHandler` 处理目标 SSH session 和远程转发回调，
 `JumpClientHandler` 处理已校验的跳板 session。
 
 #### `web.rs`

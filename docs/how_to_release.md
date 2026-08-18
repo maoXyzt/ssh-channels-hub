@@ -42,8 +42,10 @@ verification. Maturin reads the PyPI version from `Cargo.toml`, so
 #### 2.1 Install `cargo-release`
 
 ```bash
-cargo install cargo-release
+cargo install cargo-release --version 1.1.2 --locked
 ```
+
+Update the pinned version only after verifying its dry-run against this workflow.
 
 #### 2.2 Configure the crates.io token
 
@@ -132,8 +134,8 @@ cargo release minor          # 0.2.0 -> 0.3.0
 cargo release 1.0.0          # exact version
 ```
 
-Confirm that the preview updates both Cargo files, creates
-`release: <new-version>`, tags `v<new-version>`, and pushes to `origin`.
+Confirm that the preview reports it would update both Cargo files, create
+`release: <new-version>`, tag `v<new-version>`, and push to `origin`.
 
 #### 4.3 Execute
 
@@ -156,7 +158,7 @@ After all jobs pass, confirm the GitHub Release archives and checksums, the new
 | Risk | Safeguard |
 |---|---|
 | Tag and manifest versions differ | `cargo release` creates both; `verify-tag` checks them again |
-| Accidental local `cargo publish` | `publish = false`; only CI has the registry token |
+| Unexpected publish during `cargo release` | `[package.metadata.release].publish = false` disables its local publish step; `[package].publish` remains unset so CI can run `cargo publish` |
 | One platform fails after publication | Publish jobs depend on all builds or wheels |
 | Formatting, clippy, or tests fail | Release and publish jobs depend on `lint` |
 | Package metadata regresses | Normal pushes run `publish-dry-run` |
@@ -252,8 +254,10 @@ GitHub Actions (build.yml) ←┘
 #### 2.1 安装 cargo-release
 
 ```bash
-cargo install cargo-release
+cargo install cargo-release --version 1.1.2 --locked
 ```
+
+只有用 dry-run 验证新版本与本流程一致后，才更新固定版本。
 
 #### 2.2 准备 crates.io token(仓库管理员一次性)
 
@@ -340,7 +344,7 @@ cargo release minor          # 0.2.0 → 0.3.0
 cargo release 1.0.0          # 指定版本
 ```
 
-确认输出包含:
+确认预览列出以下计划动作（不会实际执行）:
 
 - `Cargo.toml` 与 `Cargo.lock` 的 `version` 改写
 - commit message: `release: <new-version>`
@@ -376,7 +380,7 @@ cargo release patch --execute
 | 风险 | 防御 |
 |---|---|
 | `Cargo.toml` 版本和 tag 不一致 | `cargo release` 同一动作产出两者；CI `publish` / `publish-pypi` 都依赖 `verify-tag` 再校验 tag↔manifest |
-| 本地误跑 `cargo publish` | `Cargo.toml` 的 `publish = false` 让 `cargo release` 跳过本地发布；只有 CI 用 `secrets.CARGO_REGISTRY_TOKEN` 推 |
+| `cargo release` 意外发布 | `[package.metadata.release].publish = false` 禁用其本地发布步骤；`[package].publish` 保持未设置，因此 CI 仍可运行 `cargo publish` |
 | 平台编译挂掉但已发包 | `publish` 依赖 `build` 全绿；`publish-pypi` 依赖 `wheels` 全绿 |
 | 代码有 fmt / clippy / 测试问题 | `lint` job 是 `release` / `publish` 的强依赖，失败则停发 |
 | PR 引入 metadata 回归(license / readme / include) | 非 tag 推送都触发 `publish-dry-run` job 跑 `cargo publish --dry-run` |

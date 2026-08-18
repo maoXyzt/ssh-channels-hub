@@ -28,8 +28,8 @@ Load and resolve configuration
   -> start one SshManager per group
   -> start IPC and, when enabled, the Web status page
   -> write runtime PID and port files
-  -> wait for Ctrl+C, IPC stop, or task failure
-  -> stop managers and remove runtime files
+  -> wait for Ctrl+C or IPC stop
+  -> cancel the service, remove runtime files, and stop managers
 ```
 
 Foreground mode remains attached to the terminal. `start -D` spawns a detached
@@ -142,11 +142,11 @@ aggregates snapshots for two consumers:
 ```text
 Ctrl+C or IPC stop
   -> cancel the service token
+  -> remove PID, IPC-port, and Web-port files
   -> stop each SshManager
   -> cancel listeners and forwarding tasks
   -> close SSH sessions
   -> mark channels Stopped
-  -> remove PID, IPC-port, and Web-port files
 ```
 
 ### 8. Concurrency and error boundaries
@@ -183,8 +183,8 @@ Ctrl+C or IPC stop
   -> 每组启动一个 SshManager
   -> 启动 IPC，以及启用时的 Web 状态页
   -> 写入 PID 和端口运行时文件
-  -> 等待 Ctrl+C、IPC stop 或任务失败
-  -> 停止 managers 并删除运行时文件
+  -> 等待 Ctrl+C 或 IPC stop
+  -> 取消服务、删除运行时文件并停止 managers
 ```
 
 前台模式保持连接终端；`start -D` 启动脱离终端的子进程，执行相同的服务流程。
@@ -286,11 +286,11 @@ jitter 指数退避继续恢复；session 成功后两层状态都会重置。
 ```text
 Ctrl+C 或 IPC stop
   -> 取消 service token
+  -> 删除 PID、IPC 端口和 Web 端口文件
   -> 停止每个 SshManager
   -> 取消 listener 和转发任务
   -> 关闭 SSH session
   -> 将 channels 标记为 Stopped
-  -> 删除 PID、IPC 端口和 Web 端口文件
 ```
 
 ### 8. 并发与错误边界

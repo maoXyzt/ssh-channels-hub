@@ -122,8 +122,9 @@ After startup:
 
 1. The client requests `tcpip-forward` and binds port `8022` on the server.
 2. Connections to server port `8022` travel through SSH to local port `80`.
-3. Test with `curl http://127.0.0.1:8022` on the server. External access also
-   requires a public bind address and an open server firewall.
+3. Test with `curl http://127.0.0.1:8022` on the server. This loopback binding is
+   server-local. For external access, set `remote = "0.0.0.0:8022"`, enable
+   `GatewayPorts yes` or `clientspecified`, and open the server firewall.
 
 `ssh-channels-hub test` checks local listeners only. Test `remote->local`
 channels from the server side.
@@ -503,7 +504,9 @@ local     = "80"                # 收到连接桥接到本机 127.0.0.1:80
 
 1. 工具向服务器发 `tcpip-forward`，在服务器上绑定 `8022`
 2. 任何对「服务器:8022」的连接，流量经 SSH 隧道到本机 `127.0.0.1:80`
-3. 服务器侧用 `curl http://127.0.0.1:8022` 或从外网访问「服务器公网IP:8022」可验证(外网需服务器防火墙放行)
+3. 在服务器上用 `curl http://127.0.0.1:8022` 验证。当前 loopback 绑定仅服务器本机
+   可访问；如需外部访问，将 `remote` 改为 `"0.0.0.0:8022"`，启用
+   `GatewayPorts yes` 或 `clientspecified`，并放行服务器防火墙。
 
 **注意**:`ssh-channels-hub test` 仅测本地监听端口，不验证远程转发，需在服务器侧实际连接验证。
 
