@@ -435,6 +435,7 @@ impl AppConfig {
 
       for right in &self.channels[index + 1..] {
         if right.direction == Direction::LocalToRemote
+          && left.local.port != 0
           && left.local.port == right.local.port
           && listen_hosts_conflict(&left.local.host, &right.local.host)
         {
@@ -458,7 +459,8 @@ impl AppConfig {
 
     let conflicts = |port| {
       self.channels.iter().find(|channel| {
-        channel.direction == Direction::LocalToRemote
+        port != 0
+          && channel.direction == Direction::LocalToRemote
           && channel.local.port == port
           && listen_hosts_conflict(WEB_HOST, &channel.local.host)
       })
@@ -1052,6 +1054,23 @@ strict = true
     let mut disabled = config;
     disabled.web.enabled = false;
     assert_eq!(disabled.checked_web_port().unwrap(), None);
+  }
+
+  #[test]
+  fn dynamic_port_zero_is_not_static_conflict() {
+    let config = AppConfig {
+      channels: vec![
+        connection("first", Direction::LocalToRemote, "127.0.0.1", 0),
+        connection("second", Direction::LocalToRemote, "127.0.0.1", 0),
+      ],
+      ..AppConfig::default()
+    };
+    assert!(config.validate_local_listeners().is_ok());
+
+    let mut web = config;
+    web.web.port = 0;
+    web.web.strict = true;
+    assert_eq!(web.checked_web_port().unwrap(), Some(0));
   }
 
   #[test]

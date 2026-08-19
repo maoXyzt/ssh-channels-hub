@@ -27,7 +27,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -176,17 +176,24 @@ async fn handle_start(
 
   let cancel = CancellationToken::new();
   let web_port = if web_config.enabled {
-    Some(
-      web::start(
-        &web_config,
-        Arc::clone(&service_manager),
-        cancel.clone(),
-        &config_path,
-        &ssh_config_path,
-      )
-      .await
-      .context("Failed to start Web status page")?,
+    let result = web::start(
+      &web_config,
+      Arc::clone(&service_manager),
+      cancel.clone(),
+      &config_path,
+      &ssh_config_path,
     )
+    .await;
+    match result {
+      Ok(port) => Some(port),
+      Err(error) => {
+        let web_error = anyhow::Error::new(error).context("Failed to start Web status page");
+        if let Err(stop_error) = service_manager.stop().await {
+          warn!(error = ?stop_error, "Failed to stop service after Web startup failure");
+        }
+        return Err(web_error);
+      }
+    }
   } else {
     None
   };
