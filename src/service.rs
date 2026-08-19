@@ -124,6 +124,8 @@ impl ServiceManager {
 
   /// Start the service
   pub async fn start(&self) -> Result<()> {
+    self.config.checked_web_port()?;
+
     let mut state = self.state.lock().await;
 
     if *state != ServiceState::Stopped {
@@ -442,5 +444,30 @@ mod tests {
     assert_eq!(groups[0][1].name, "web");
     assert_eq!(groups[0][2].name, "first-remote");
     assert_eq!(groups[1][0].name, "duplicate-remote");
+  }
+
+  #[tokio::test]
+  async fn start_rejects_duplicate_local_listeners_before_building_channels() {
+    let config: AppConfig = toml::from_str(
+      r#"
+[[channels]]
+name = "first"
+hostname = "missing"
+direction = "local->remote"
+local = "9090"
+remote = "80"
+
+[[channels]]
+name = "second"
+hostname = "missing"
+direction = "local->remote"
+local = "9090"
+remote = "81"
+"#,
+    )
+    .unwrap();
+
+    let error = ServiceManager::new(config).start().await.unwrap_err();
+    assert!(error.to_string().contains("local listener conflict"));
   }
 }
