@@ -390,6 +390,7 @@ impl SshManager {
         .clamp(Duration::from_secs(1), EXHAUSTED_RETRY_MAX_DELAY);
       let mut exhausted_backoff = exhausted_retry_backoff(initial_delay);
       let mut mark_stopped = false;
+      let mut retry_after_disconnect = false;
 
       loop {
         let result = tokio::select! {
@@ -406,7 +407,8 @@ impl SshManager {
               &configs,
               &reconnection_config,
               cancel.clone(),
-              health.clone()
+              health.clone(),
+              retry_after_disconnect,
             ) => result,
         };
 
@@ -416,6 +418,7 @@ impl SshManager {
             break;
           }
           Ok(()) => {
+            retry_after_disconnect = true;
             exhausted_backoff = exhausted_retry_backoff(initial_delay);
             let retry_delay = jittered_retry_delay(initial_delay);
             warn!(
@@ -517,6 +520,7 @@ impl SshManager {
     reconnection_config: &ReconnectionConfig,
     cancel: CancellationToken,
     health: Vec<Arc<StdMutex<ChannelHealth>>>,
+    retry_after_disconnect: bool,
   ) -> Result<()> {
     let route = configs
       .first()
@@ -552,7 +556,9 @@ impl SshManager {
       );
       let health = health.clone();
       let cancel = cancel.clone();
-      async move { Self::establish_connection(configs, cancel, health).await }
+      async move {
+        Self::establish_connection(configs, cancel, health, retry_after_disconnect).await
+      }
     })
     .retry(&builder)
     .when(AppError::is_retryable)
@@ -582,6 +588,7 @@ impl SshManager {
     configs: &[ChannelConfig],
     cancel: CancellationToken,
     health: Vec<Arc<StdMutex<ChannelHealth>>>,
+    retry_after_disconnect: bool,
   ) -> Result<()> {
     let route = configs
       .first()
@@ -628,6 +635,7 @@ impl SshManager {
           config,
           reverse_routes.clone(),
           channel_health.clone(),
+          retry_after_disconnect,
         )
         .await
         {
@@ -846,6 +854,7 @@ async fn register_forwarded_tcpip(
   config: &ChannelConfig,
   reverse_routes: ReverseRoutes,
   health: Arc<StdMutex<ChannelHealth>>,
+  retry_after_disconnect: bool,
 ) -> Result<()> {
   let ChannelTypeParams::ForwardedTcpIp {
     remote_bind_host,
@@ -868,16 +877,7 @@ async fn register_forwarded_tcpip(
   let bound_port = session
     .tcpip_forward(remote_bind_host.as_str(), *remote_bind_port as u32)
     .await
-    .map_err(|error| match error {
-      russh::Error::Disconnect
-      | russh::Error::HUP
-      | russh::Error::ConnectionTimeout
-      | russh::Error::KeepaliveTimeout
-      | russh::Error::InactivityTimeout
-      | russh::Error::SendError
-      | russh::Error::IO(_) => AppError::SshConnection(format!("tcpip-forward failed: {}", error)),
-      _ => AppError::SshChannel(format!("tcpip-forward failed: {}", error)),
-    })?;
+    .map_err(|error| map_tcpip_forward_error(error, retry_after_disconnect))?;
 
   let actual_port = if *remote_bind_port == 0 {
     bound_port
@@ -905,6 +905,21 @@ async fn register_forwarded_tcpip(
   );
   set_health(&health, ChannelHealth::Connected);
   Ok(())
+}
+
+fn map_tcpip_forward_error(error: russh::Error, retry_after_disconnect: bool) -> AppError {
+  let message = format!("tcpip-forward failed: {}", error);
+  match error {
+    russh::Error::RequestDenied if retry_after_disconnect => AppError::SshConnection(message),
+    russh::Error::Disconnect
+    | russh::Error::HUP
+    | russh::Error::ConnectionTimeout
+    | russh::Error::KeepaliveTimeout
+    | russh::Error::InactivityTimeout
+    | russh::Error::SendError
+    | russh::Error::IO(_) => AppError::SshConnection(message),
+    _ => AppError::SshChannel(message),
+  }
 }
 
 /// Match OpenSSH's behavior by preferring host-key algorithms already trusted
@@ -1501,5 +1516,11 @@ mod tests {
       established_session_outcome(AppError::SshChannel("listener failed".into())).is_err(),
       "permanent errors must not be swallowed after a session was established"
     );
+  }
+
+  #[test]
+  fn remote_forward_request_denied_retries_only_after_disconnect() {
+    assert!(!map_tcpip_forward_error(russh::Error::RequestDenied, false).is_retryable());
+    assert!(map_tcpip_forward_error(russh::Error::RequestDenied, true).is_retryable());
   }
 }
