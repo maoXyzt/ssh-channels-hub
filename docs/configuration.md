@@ -174,6 +174,13 @@ The status page listens only on `127.0.0.1`, and startup prints its final URL.
 It shows channel directions, endpoints, health, and host-key remediation
 commands. **Open local** always uses the `local` endpoint.
 
+Channel listeners take priority: duplicate or overlapping `local->remote` binds
+are rejected before SSH startup. Web uses the first port not conflicting with
+them; with `strict = true`, a conflict fails validation. Wildcards (`0.0.0.0` /
+`::`) conflict with every address in their family; `remote->local` channels and
+different concrete addresses or families are excluded. Hostnames are compared
+case-insensitively without DNS resolution.
+
 ### 4. Examples
 
 #### 4.1 Standard key authentication
@@ -606,6 +613,11 @@ key 是 SSH config 里的 alias 字符串。**没有覆盖需求的 host 不需�
 `strict = false`，打印的是实际顺延后绑定的端口。要关闭页面，必须显式设置
 `enabled = false`。页面展示每条 channel 的方向、local / remote 端点和实时健康
 状态；两种方向的 **Open local** 链接都基于 `local` 地址生成。
+
+本机 channel 监听优先：重复或重叠的 `local->remote` 监听会在 SSH 启动前被拒绝。
+Web 默认跳过 channel 已占用的端口；`strict = true` 时冲突直接校验失败。通配地址
+(`0.0.0.0` / `::`)会与同地址族的所有地址冲突；`remote->local` 及不同具体地址或
+地址族不参与此项检查。主机名仅按不区分大小写的文本比较，不执行 DNS 解析。
 
 ### 4. 示例
 

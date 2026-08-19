@@ -27,7 +27,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -81,6 +81,9 @@ async fn main() -> AnyhowResult<()> {
 /// Spawn a detached child process that runs the service (foreground mode). Parent exits immediately.
 async fn spawn_daemon(config_path: &Path, debug: bool) -> AnyhowResult<()> {
   let config = AppConfig::from_file(config_path).context("Failed to load configuration")?;
+  config
+    .checked_web_port()
+    .context("Failed local listener validation")?;
   let web_enabled = config.web.enabled;
   if web_enabled {
     let _ = std::fs::remove_file(web_port_file_path(config_path));
@@ -150,13 +153,19 @@ async fn handle_start(
   ui::kv_dim("Config", config_path.display());
 
   let config = AppConfig::from_file(&config_path).context("Failed to load configuration")?;
+  let web_port = config
+    .checked_web_port()
+    .context("Failed local listener validation")?;
   let ssh_config_path = config.ssh_config_path();
   ui::kv("Channels", config.channels.len());
   ui::kv_dim("SSH config", ssh_config_path.display());
 
   info!("Configuration loaded successfully");
 
-  let web_config = config.web.clone();
+  let mut web_config = config.web.clone();
+  if let Some(port) = web_port {
+    web_config.port = port;
+  }
   let service_manager = Arc::new(ServiceManager::new(config));
 
   // Start the service
@@ -167,17 +176,24 @@ async fn handle_start(
 
   let cancel = CancellationToken::new();
   let web_port = if web_config.enabled {
-    Some(
-      web::start(
-        &web_config,
-        Arc::clone(&service_manager),
-        cancel.clone(),
-        &config_path,
-        &ssh_config_path,
-      )
-      .await
-      .context("Failed to start Web status page")?,
+    let result = web::start(
+      &web_config,
+      Arc::clone(&service_manager),
+      cancel.clone(),
+      &config_path,
+      &ssh_config_path,
     )
+    .await;
+    match result {
+      Ok(port) => Some(port),
+      Err(error) => {
+        let web_error = anyhow::Error::new(error).context("Failed to start Web status page");
+        if let Err(stop_error) = service_manager.stop().await {
+          warn!(error = ?stop_error, "Failed to stop service after Web startup failure");
+        }
+        return Err(web_error);
+      }
+    }
   } else {
     None
   };
@@ -786,6 +802,24 @@ async fn handle_validate(config_path: Option<std::path::PathBuf>) -> AnyhowResul
       return Err(anyhow::anyhow!("Invalid configuration: {}", e));
     }
   };
+
+  let web_port = match config.checked_web_port() {
+    Ok(port) => port,
+    Err(error) => {
+      println!();
+      ui::fail(format!("Local listeners are invalid: {}", error));
+      return Err(anyhow::anyhow!("Invalid configuration: {}", error));
+    }
+  };
+
+  if let Some(port) = web_port
+    && port != config.web.port
+  {
+    ui::hint(format!(
+      "Web status port {} conflicts with a channel; it will use {}.",
+      config.web.port, port
+    ));
+  }
 
   ui::kv_dim("SSH config", config.ssh_config_path().display());
 

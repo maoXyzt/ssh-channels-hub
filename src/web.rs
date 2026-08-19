@@ -87,8 +87,8 @@ async fn bind(config: &WebConfig) -> Result<(TcpListener, u16)> {
         })?;
         return Ok((listener, actual_port.port()));
       }
-      Err(error) if !config.strict && error.kind() == ErrorKind::AddrInUse => {
-        debug!(port, "Web status port occupied, trying the next port");
+      Err(error) if should_try_next_port(&error, config.strict) => {
+        debug!(port, "Web status port unavailable, trying the next port");
       }
       Err(error) => {
         return Err(AppError::Service(format!(
@@ -103,6 +103,14 @@ async fn bind(config: &WebConfig) -> Result<(TcpListener, u16)> {
     "No available Web status port at or above {}",
     config.port
   )))
+}
+
+fn should_try_next_port(error: &std::io::Error, strict: bool) -> bool {
+  !strict
+    && matches!(
+      error.kind(),
+      ErrorKind::AddrInUse | ErrorKind::PermissionDenied
+    )
 }
 
 async fn handle_connection(
@@ -441,6 +449,18 @@ mod tests {
     assert!(
       page.contains("ssh-keyscan -p 2222 &#39;db.example.com&#39; &gt;&gt; ~/.ssh/known_hosts")
     );
+  }
+
+  #[test]
+  fn non_strict_web_port_binding_retries_permission_denied() {
+    assert!(should_try_next_port(
+      &std::io::Error::from(ErrorKind::PermissionDenied),
+      false
+    ));
+    assert!(!should_try_next_port(
+      &std::io::Error::from(ErrorKind::PermissionDenied),
+      true
+    ));
   }
 
   #[tokio::test]

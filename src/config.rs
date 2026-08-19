@@ -2,7 +2,10 @@ use crate::error::{AppError, Result};
 use crate::ssh_config;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
+
+const WEB_HOST: &str = "127.0.0.1";
 
 #[cfg(not(windows))]
 fn resolve_unix_config_dir(
@@ -422,6 +425,68 @@ impl AppConfig {
       .unwrap_or_else(ssh_config::default_ssh_config_path)
   }
 
+  /// Reject local listeners that the operating system cannot bind together.
+  pub(crate) fn validate_local_listeners(&self) -> Result<()> {
+    // ponytail: O(n²) startup validation; use indexed bind keys if channel counts become large.
+    for (index, left) in self.channels.iter().enumerate() {
+      if left.direction != Direction::LocalToRemote {
+        continue;
+      }
+
+      for right in &self.channels[index + 1..] {
+        if right.direction == Direction::LocalToRemote
+          && left.local.port != 0
+          && left.local.port == right.local.port
+          && listen_hosts_conflict(&left.local.host, &right.local.host)
+        {
+          return Err(AppError::Config(format!(
+            "local listener conflict on port {}: channel '{}' ({}) conflicts with channel '{}' ({})",
+            left.local.port, left.name, left.local.host, right.name, right.local.host
+          )));
+        }
+      }
+    }
+
+    Ok(())
+  }
+
+  /// Validate channel listeners and select the Web port they leave available.
+  pub(crate) fn checked_web_port(&self) -> Result<Option<u16>> {
+    self.validate_local_listeners()?;
+    if !self.web.enabled {
+      return Ok(None);
+    }
+
+    let conflicts = |port| {
+      self.channels.iter().find(|channel| {
+        port != 0
+          && channel.direction == Direction::LocalToRemote
+          && channel.local.port == port
+          && listen_hosts_conflict(WEB_HOST, &channel.local.host)
+      })
+    };
+
+    if self.web.strict {
+      if let Some(channel) = conflicts(self.web.port) {
+        return Err(AppError::Config(format!(
+          "Web listener {}:{} conflicts with channel '{}' ({}:{})",
+          WEB_HOST, self.web.port, channel.name, channel.local.host, channel.local.port
+        )));
+      }
+      return Ok(Some(self.web.port));
+    }
+
+    (self.web.port..=u16::MAX)
+      .find(|port| conflicts(*port).is_none())
+      .map(Some)
+      .ok_or_else(|| {
+        AppError::Config(format!(
+          "no Web status port at or above {} is available after channel listeners",
+          self.web.port
+        ))
+      })
+  }
+
   /// Build runtime channel configs by resolving each `[[channels]]` entry against
   /// the SSH config and applying any `[auth.<alias>]` overrides.
   pub fn build_channels(&self) -> Result<Vec<ChannelConfig>> {
@@ -594,6 +659,19 @@ impl AppConfig {
     out.push_str("strict = false\n");
 
     out
+  }
+}
+
+fn listen_hosts_conflict(left: &str, right: &str) -> bool {
+  match (left.parse::<IpAddr>(), right.parse::<IpAddr>()) {
+    (Ok(IpAddr::V4(left)), Ok(IpAddr::V4(right))) => {
+      left == Ipv4Addr::UNSPECIFIED || right == Ipv4Addr::UNSPECIFIED || left == right
+    }
+    (Ok(IpAddr::V6(left)), Ok(IpAddr::V6(right))) => {
+      left.is_unspecified() || right.is_unspecified() || left == right
+    }
+    (Err(_), Err(_)) => left.eq_ignore_ascii_case(right),
+    _ => false,
   }
 }
 
@@ -891,6 +969,108 @@ strict = true
     assert!(!config.web.enabled);
     assert_eq!(config.web.port, 8000);
     assert!(config.web.strict);
+  }
+
+  fn connection(name: &str, direction: Direction, host: &str, port: u16) -> ConnectionConfig {
+    ConnectionConfig {
+      name: name.into(),
+      hostname: "server".into(),
+      direction,
+      local: Endpoint {
+        host: host.into(),
+        port,
+      },
+      remote: Endpoint {
+        host: "127.0.0.1".into(),
+        port: 80,
+      },
+    }
+  }
+
+  #[test]
+  fn duplicate_local_listeners_report_both_channels() {
+    let config = AppConfig {
+      channels: vec![
+        connection("first", Direction::LocalToRemote, "127.0.0.1", 9090),
+        connection("second", Direction::LocalToRemote, "127.0.0.1", 9090),
+      ],
+      ..AppConfig::default()
+    };
+
+    let error = config.validate_local_listeners().unwrap_err().to_string();
+    assert!(error.contains("first"));
+    assert!(error.contains("second"));
+    assert!(error.contains("127.0.0.1"));
+    assert!(error.contains("9090"));
+  }
+
+  #[test]
+  fn wildcard_local_listener_conflicts_with_concrete_address() {
+    let config = AppConfig {
+      channels: vec![
+        connection("wildcard", Direction::LocalToRemote, "0.0.0.0", 9090),
+        connection("loopback", Direction::LocalToRemote, "127.0.0.1", 9090),
+      ],
+      ..AppConfig::default()
+    };
+
+    assert!(config.validate_local_listeners().is_err());
+  }
+
+  #[test]
+  fn distinct_addresses_families_and_remote_binds_do_not_conflict() {
+    let config = AppConfig {
+      channels: vec![
+        connection("first-v4", Direction::LocalToRemote, "127.0.0.1", 9090),
+        connection("second-v4", Direction::LocalToRemote, "127.0.0.2", 9090),
+        connection("v6", Direction::LocalToRemote, "::1", 9090),
+        connection("remote-bind", Direction::RemoteToLocal, "127.0.0.1", 9090),
+      ],
+      ..AppConfig::default()
+    };
+
+    assert!(config.validate_local_listeners().is_ok());
+    assert!(listen_hosts_conflict("LOCALHOST", "localhost"));
+    assert!(!listen_hosts_conflict("first.local", "second.local"));
+    assert!(listen_hosts_conflict("::", "::1"));
+    assert!(!listen_hosts_conflict("0.0.0.0", "::1"));
+  }
+
+  #[test]
+  fn web_port_respects_channel_priority_and_mode() {
+    let config = AppConfig {
+      channels: vec![
+        connection("first", Direction::LocalToRemote, "0.0.0.0", 9090),
+        connection("second", Direction::LocalToRemote, "127.0.0.1", 9091),
+      ],
+      ..AppConfig::default()
+    };
+    assert_eq!(config.checked_web_port().unwrap(), Some(9092));
+
+    let mut strict = config.clone();
+    strict.web.strict = true;
+    assert!(strict.checked_web_port().is_err());
+
+    let mut disabled = config;
+    disabled.web.enabled = false;
+    assert_eq!(disabled.checked_web_port().unwrap(), None);
+  }
+
+  #[test]
+  fn dynamic_port_zero_is_not_static_conflict() {
+    let config = AppConfig {
+      channels: vec![
+        connection("first", Direction::LocalToRemote, "127.0.0.1", 0),
+        connection("second", Direction::LocalToRemote, "127.0.0.1", 0),
+      ],
+      ..AppConfig::default()
+    };
+    assert!(config.validate_local_listeners().is_ok());
+
+    let mut web = config;
+    web.web.port = 0;
+    web.web.strict = true;
+    assert_eq!(web.checked_web_port().unwrap(), Some(0));
   }
 
   #[test]
