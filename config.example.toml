@@ -35,8 +35,8 @@
 
 # --- Channel definitions ---
 # `hostname` is the SSH config Host alias.
-# `local` / `remote` are "host:port" (host defaults to 127.0.0.1) — they
-# always literally mean the local / remote side, regardless of direction.
+# `local` / `remote` accept "host:port" (host defaults to 127.0.0.1) or an
+# HTTP/HTTPS URL — they always mean the local / remote side, regardless of direction.
 # Append new `[[channels]]` blocks below; nothing else needs to follow them.
 
 [[channels]]
@@ -60,3 +60,11 @@ remote    = "127.0.0.1:80"
 # direction = "remote->local"         # ssh -R: server binds `remote`, bridge to `local`
 # remote    = "8022"
 # local     = "80"
+
+# Expose an internal HTTPS service resolved and dialed by this machine:
+# [[channels]]
+# name      = "internal-api"
+# hostname  = "example-server"
+# direction = "remote->local"
+# remote    = "18443"
+# local     = "https://api.internal.example/v1"  # URL path is not part of the TCP target

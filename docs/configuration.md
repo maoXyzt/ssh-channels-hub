@@ -91,6 +91,16 @@ Both endpoints accept these forms:
 | `"0.0.0.0:8080"` | Every interface on that side; remote use also requires `GatewayPorts` |
 | `"db.internal:5432"` | Hostname and port |
 | `"[::1]:3306"` | IPv6 loopback and port |
+| `"http://api.internal/v1"` | `api.internal:80` |
+| `"https://api.internal:8443/v1"` | `api.internal:8443` |
+
+HTTP and HTTPS URLs default to ports 80 and 443 respectively. The path, query,
+and fragment are not part of the TCP target. For `remote->local`, the daemon
+resolves and dials the `local` hostname on this machine for every incoming
+connection; it does not cache a configured IP address. TLS is passed through
+end-to-end without terminating it or rewriting Host, SNI, or request paths.
+The remote client remains responsible for its URL, DNS/hostname mapping, and
+certificate verification.
 
 Unknown fields are rejected instead of silently ignored.
 
@@ -259,6 +269,21 @@ local     = "80"             # forwards to local 127.0.0.1:80
 
 To listen on server address `0.0.0.0:8022`, set that value in `remote` and
 enable `GatewayPorts yes` or `clientspecified` in the server's `sshd_config`.
+
+To expose an internal HTTPS service that only this machine can resolve and reach:
+
+```toml
+[[channels]]
+name      = "internal-api"
+hostname  = "jumpbox"
+direction = "remote->local"
+remote    = "18443"
+local     = "https://api.internal.example/v1"
+```
+
+Each connection to the server's `127.0.0.1:18443` makes this machine resolve
+`api.internal.example` and connect to port 443. The URL path and TLS stream are
+forwarded unchanged.
 
 #### 4.5 Listen on every local interface
 
@@ -547,6 +572,13 @@ strict = false
 | `"0.0.0.0:8080"` | `0.0.0.0:8080`(本侧多网卡；远端配合服务器 `GatewayPorts` 时全网可达) |
 | `"db.internal:5432"` | `db.internal:5432`(主机名) |
 | `"[::1]:3306"` | `::1:3306`(IPv6 用方括号) |
+| `"http://api.internal/v1"` | `api.internal:80` |
+| `"https://api.internal:8443/v1"` | `api.internal:8443` |
+
+HTTP / HTTPS URL 未指定端口时分别使用 80 / 443。URL 的 path、query 和 fragment
+不属于 TCP 连接目标。对于 `remote->local`，daemon 会在本机为每个远端新连接解析并
+拨号 `local` 域名，不会缓存一个固定目标 IP。TLS 端到端透传，daemon 不终止 TLS，
+也不改写 Host、SNI 或请求路径；远端客户端仍需自行处理 URL、域名映射和证书校验。
 
 未识别的字段会直接报错(`deny_unknown_fields`)，不会被静默忽略。
 
@@ -693,6 +725,20 @@ local     = "80"             # 收到连接桥接到本机 127.0.0.1:80
 
 要让服务器在 `0.0.0.0:8022` 上监听(让其它机器也能连)，把 `remote` 改成 `"0.0.0.0:8022"`，**并且**服务器 `/etc/ssh/sshd_config` 里必须开 `GatewayPorts yes`(或 `clientspecified`)。
 
+如果内网 HTTPS 服务只能由本机解析和访问，可以直接配置 URL：
+
+```toml
+[[channels]]
+name      = "internal-api"
+hostname  = "jumpbox"
+direction = "remote->local"
+remote    = "18443"
+local     = "https://api.internal.example/v1"
+```
+
+每个连接到服务器 `127.0.0.1:18443` 的请求，都会让本机重新解析
+`api.internal.example` 并连接其 443 端口，URL 请求路径和 TLS 数据流原样转发。
+
 #### 4.5 监听到所有网卡
 
 ```toml
@@ -804,7 +850,7 @@ ssh-channels-hub validate --config /path/to/config.toml
 - 该 alias 有 `HostName` 和 `User`
 - 该 alias 有 `IdentityFile` 或 `[auth.<alias>].password` 二选一
 - `direction` 取值合法
-- `local` / `remote` 是合法的 `port` 或 `host:port`
+- `local` / `remote` 是合法的 `port`、`host:port` 或 HTTP/HTTPS URL
 - 如果 channel 走 `ProxyJump`:每一跳的别名都已定义、有 `User` 和 `HostName`、有可用的 publickey(显式 `IdentityFile`、`Host *` 全局，或唯一一个 `~/.ssh/id_*` 默认 key)
 - 如果有 `ProxyJump`，还会做两项环境前置检查:
   - **失败**:跳板的 `IdentityFile` 文件确实不存在(键路径已解析但落不到磁盘)

@@ -59,13 +59,15 @@ impl Serialize for Direction {
   }
 }
 
-/// `host:port`, `[ipv6]:port`, or bare `port` (host defaults to 127.0.0.1).
+/// `host:port`, `[ipv6]:port`, bare `port` (host defaults to 127.0.0.1), or an
+/// HTTP/HTTPS URL (path components are ignored).
 ///
 /// Examples:
-/// - `"3306"`             → `127.0.0.1:3306`
-/// - `"0.0.0.0:8022"`     → `0.0.0.0:8022`
-/// - `"db.internal:5432"` → `db.internal:5432`
-/// - `"[::1]:3306"`       → `::1:3306`
+/// - `"3306"`                        → `127.0.0.1:3306`
+/// - `"0.0.0.0:8022"`                → `0.0.0.0:8022`
+/// - `"db.internal:5432"`            → `db.internal:5432`
+/// - `"[::1]:3306"`                  → `::1:3306`
+/// - `"https://api.internal/v1"`     → `api.internal:443`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoint {
   pub host: String,
@@ -77,8 +79,13 @@ impl Endpoint {
     let trimmed = s.trim();
     if trimmed.is_empty() {
       return Err(AppError::Config(
-        "endpoint cannot be empty; expected \"port\" or \"host:port\"".to_string(),
+        "endpoint cannot be empty; expected \"port\", \"host:port\", or an HTTP/HTTPS URL"
+          .to_string(),
       ));
+    }
+
+    if trimmed.contains("://") {
+      return Self::parse_url(trimmed);
     }
 
     if let Ok(port) = trimmed.parse::<u16>() {
@@ -113,7 +120,7 @@ impl Endpoint {
     // rsplit so bare IPv6 (ambiguous) is forced into the [] branch above.
     let (host, port_str) = trimmed.rsplit_once(':').ok_or_else(|| {
       AppError::Config(format!(
-        "invalid endpoint '{}': expected \"port\" or \"host:port\"",
+        "invalid endpoint '{}': expected \"port\", \"host:port\", or an HTTP/HTTPS URL",
         s
       ))
     })?;
@@ -130,6 +137,58 @@ impl Endpoint {
       host: host.to_string(),
       port,
     })
+  }
+
+  fn parse_url(s: &str) -> Result<Self> {
+    let (scheme, rest) = s
+      .split_once("://")
+      .expect("URL parsing is only attempted when a scheme separator is present");
+    let default_port = if scheme.eq_ignore_ascii_case("http") {
+      80
+    } else if scheme.eq_ignore_ascii_case("https") {
+      443
+    } else {
+      return Err(AppError::Config(format!(
+        "invalid endpoint '{}': unsupported URL scheme '{}'; expected \"http\" or \"https\"",
+        s, scheme
+      )));
+    };
+
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty() {
+      return Err(AppError::Config(format!(
+        "invalid endpoint '{}': URL host cannot be empty",
+        s
+      )));
+    }
+    if authority.contains('@') {
+      return Err(AppError::Config(format!(
+        "invalid endpoint '{}': URL userinfo is not supported",
+        s
+      )));
+    }
+
+    let endpoint = if authority.starts_with('[') {
+      if authority.contains("]:") {
+        authority.to_string()
+      } else {
+        format!("{}:{}", authority, default_port)
+      }
+    } else {
+      match authority.matches(':').count() {
+        0 => format!("{}:{}", authority, default_port),
+        1 => authority.to_string(),
+        _ => {
+          return Err(AppError::Config(format!(
+            "invalid endpoint '{}': IPv6 URL hosts must be bracketed",
+            s
+          )));
+        }
+      }
+    };
+
+    Self::parse(&endpoint)
   }
 }
 
@@ -611,7 +670,9 @@ impl AppConfig {
     } else {
       out.push_str("# --- Channel templates ---\n");
       out.push_str("# direction: \"local->remote\" (ssh -L) or \"remote->local\" (ssh -R).\n");
-      out.push_str("# local / remote: \"host:port\" (host defaults to 127.0.0.1 if omitted).\n\n");
+      out.push_str(
+        "# local / remote: \"host:port\" (host defaults to 127.0.0.1) or HTTP/HTTPS URL.\n\n",
+      );
       for entry in entries {
         let target = entry.hostname.as_deref().unwrap_or("?");
         out.push_str(&format!("# Host alias: {} ({})\n", entry.host, target));
@@ -1092,6 +1153,40 @@ strict = true
     let ep = Endpoint::parse("db.internal:5432").unwrap();
     assert_eq!(ep.host, "db.internal");
     assert_eq!(ep.port, 5432);
+  }
+
+  #[test]
+  fn endpoint_parses_http_and_https_urls() {
+    let cases = [
+      ("http://api.internal/v1", "api.internal", 80),
+      (
+        "https://api.internal/v1?full=true#models",
+        "api.internal",
+        443,
+      ),
+      ("HTTPS://api.internal:8443/v1", "api.internal", 8443),
+      ("https://[::1]/v1", "::1", 443),
+      ("http://[::1]:8080/v1", "::1", 8080),
+    ];
+
+    for (input, host, port) in cases {
+      let endpoint = Endpoint::parse(input).unwrap();
+      assert_eq!(endpoint.host, host, "input: {input}");
+      assert_eq!(endpoint.port, port, "input: {input}");
+    }
+  }
+
+  #[test]
+  fn endpoint_rejects_invalid_urls() {
+    for input in [
+      "ftp://api.internal/v1",
+      "https:///v1",
+      "https://user@api.internal/v1",
+      "https://::1/v1",
+      "https://api.internal:not-a-port/v1",
+    ] {
+      assert!(Endpoint::parse(input).is_err(), "input: {input}");
+    }
   }
 
   #[test]

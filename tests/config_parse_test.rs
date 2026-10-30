@@ -268,6 +268,33 @@ local = "127.0.0.1:80"
 }
 
 #[test]
+fn remote_to_local_accepts_an_https_url_destination() {
+  let config = parse(
+    r#"
+[[channels]]
+name = "internal-api"
+hostname = "myserver"
+direction = "remote->local"
+remote = "18443"
+local = "https://api.internal.example/v1"
+"#,
+  );
+
+  let channels = config.build_channels().expect("build_channels");
+  match &channels[0].params {
+    ChannelTypeParams::ForwardedTcpIp {
+      local_connect_host,
+      local_connect_port,
+      ..
+    } => {
+      assert_eq!(local_connect_host, "api.internal.example");
+      assert_eq!(*local_connect_port, 443);
+    }
+    other => panic!("expected ForwardedTcpIp, got {:?}", other),
+  }
+}
+
+#[test]
 fn endpoint_defaults_to_loopback_when_port_only() {
   let config = parse(
     r#"

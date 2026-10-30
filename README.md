@@ -113,8 +113,8 @@ Now `mysql -h 127.0.0.1 -P 3306` goes through the tunnel.
 name      = "string"                            # required, unique identifier
 hostname  = "ssh-config-alias"                  # required; resolves via ~/.ssh/config
 direction = "local->remote" | "remote->local"   # required
-local     = "port" | "host:port"                # required, this machine's side
-remote    = "port" | "host:port"                # required, the SSH server's side
+local     = "port" | "host:port" | "URL"        # required, this machine's side
+remote    = "port" | "host:port" | "URL"        # required, the SSH server's side
 ```
 
 `local` and `remote` always name the address on their respective side regardless of direction. Direction decides who listens:
@@ -127,7 +127,11 @@ Endpoints accept:
 - `"3306"` → `127.0.0.1:3306` (bare port, host defaults to loopback)
 - `"127.0.0.1:3306"` → explicit form
 - `"0.0.0.0:8080"` → bind on every interface
+- `"db.internal:5432"` → hostname and port
 - `"[::1]:3306"` → IPv6
+- `"https://api.internal/v1"` → `api.internal:443` (HTTP defaults to 80)
+
+For `remote->local`, this machine resolves and dials the `local` hostname for every incoming connection. URL paths are not part of the TCP target. HTTPS remains end-to-end: the daemon does not terminate TLS or rewrite Host, SNI, or request paths.
 
 ### Web status page
 
@@ -192,11 +196,11 @@ remote    = "3306"
 name      = "lan-api"
 hostname  = "edge-server"
 direction = "remote->local"
-local     = "192.168.1.50:3000" # bare "3000" means 127.0.0.1:3000
-remote    = "8080"              # edge-server binds 127.0.0.1:8080
+local     = "https://api.internal.example/v1"
+remote    = "18443" # edge-server binds 127.0.0.1:18443
 ```
 
-**Explanation:** Connections to `127.0.0.1:8080` on `edge-server` are forwarded to `192.168.1.50:3000`. To accept external connections on the server, set `remote = "0.0.0.0:8080"` and configure `GatewayPorts clientspecified` in `sshd_config`.
+**Explanation:** For every connection to `127.0.0.1:18443` on `edge-server`, this machine resolves `api.internal.example` and connects to port 443. The `/v1` request path passes through unchanged. To accept external connections on the server, set `remote = "0.0.0.0:18443"` and configure `GatewayPorts clientspecified` in `sshd_config`.
 
 Full field reference: [docs/configuration.md](docs/configuration.md).
 
