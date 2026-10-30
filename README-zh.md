@@ -111,8 +111,8 @@ ssh-channels-hub start          # Ctrl+C 退出
 name      = "string"                            # 必填，唯一标识
 hostname  = "ssh-config-alias"                  # 必填，来自 ~/.ssh/config 的 alias
 direction = "local->remote" | "remote->local"   # 必填
-local     = "port" | "host:port"                # 必填，本机这一侧的地址
-remote    = "port" | "host:port"                # 必填，远端这一侧的地址
+local     = "port" | "host:port" | "URL"        # 必填，本机这一侧的地址
+remote    = "port" | "host:port" | "URL"        # 必填，远端这一侧的地址
 ```
 
 `local` 和 `remote` 始终代表对应一侧的地址，与 `direction` 无关。`direction` 决定**谁监听**：
@@ -125,7 +125,11 @@ Endpoint 接受以下写法：
 - `"3306"` → `127.0.0.1:3306`（裸端口，host 默认为 loopback）
 - `"127.0.0.1:3306"` → 显式写法
 - `"0.0.0.0:8080"` → 监听所有网卡
+- `"db.internal:5432"` → 域名和端口
 - `"[::1]:3306"` → IPv6
+- `"https://api.internal/v1"` → `api.internal:443`（HTTP 默认端口为 80）
+
+对于 `remote->local`，本机会在每次收到远端连接时解析并连接 `local` 域名。URL 路径不属于 TCP 连接目标。HTTPS 保持端到端传输：daemon 不终止 TLS，也不改写 Host、SNI 或请求路径。
 
 ### Web 状态页
 
@@ -195,13 +199,13 @@ remote    = "3306"
 name      = "lan-api"
 hostname  = "edge-server"
 direction = "remote->local"
-local     = "192.168.1.50:3000" # 只填 "3000" 则代表 127.0.0.1:3000
-remote    = "8080"              # edge-server 监听 127.0.0.1:8080
+local     = "https://api.internal.example/v1"
+remote    = "18443" # edge-server 监听 127.0.0.1:18443
 ```
 
-**解释：** `edge-server` 上的 `127.0.0.1:8080` 会转发到
-`192.168.1.50:3000`。如需接受服务器外部连接，将 `remote` 改为
-`"0.0.0.0:8080"`，并在 `sshd_config` 中设置 `GatewayPorts clientspecified`。
+**解释：** 每次连接到 `edge-server` 的 `127.0.0.1:18443` 时，本机都会解析
+`api.internal.example` 并连接其 443 端口。客户端必须在请求 URL 中包含 `/v1`，配置中的路径不会自动添加。如需接受服务器外部连接，将 `remote` 改为
+`"0.0.0.0:18443"`，并在 `sshd_config` 中设置 `GatewayPorts clientspecified`。
 
 完整字段说明：[docs/configuration.md](docs/configuration.md)。
 

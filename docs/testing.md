@@ -33,6 +33,39 @@ nc -zv 127.0.0.1 8080
 curl http://127.0.0.1:8080
 ```
 
+### Domain-based remote forwards
+
+For a channel that exposes an internal HTTPS service:
+
+```toml
+[[channels]]
+name      = "internal-api"
+hostname  = "edge-server"
+direction = "remote->local"
+remote    = "18443"
+local     = "https://api.internal.example/v1"
+```
+
+First confirm that the daemon machine can access the service. Then check the
+remote listener from the SSH server:
+
+```bash
+nc -zv 127.0.0.1 18443
+```
+
+Test HTTPS while preserving the original hostname for Host, SNI, and certificate
+verification:
+
+```bash
+curl --connect-to 'api.internal.example:443:127.0.0.1:18443' \
+  'https://api.internal.example/v1/models'
+```
+
+Replace `/v1/models` with a real endpoint and add any required authentication.
+The `--connect-to` option only changes where curl connects; it does not change
+the request URL. Do not use `http://` for an HTTPS destination: the daemon
+passes TCP through unchanged and does not convert between HTTP and HTTPS.
+
 Check the service status or debug logs:
 
 ```bash
@@ -70,6 +103,36 @@ cargo run -- --config config.toml test
 nc -zv 127.0.0.1 8080
 curl http://127.0.0.1:8080
 ```
+
+### 基于域名的反向中转
+
+假设通过以下 channel 暴露内网 HTTPS 服务：
+
+```toml
+[[channels]]
+name      = "internal-api"
+hostname  = "edge-server"
+direction = "remote->local"
+remote    = "18443"
+local     = "https://api.internal.example/v1"
+```
+
+先确认运行 daemon 的本机可以访问该服务，然后在 SSH 服务器上检查远端监听：
+
+```bash
+nc -zv 127.0.0.1 18443
+```
+
+测试 HTTPS 时保留原始域名，以确保 Host、SNI 和证书校验正确：
+
+```bash
+curl --connect-to 'api.internal.example:443:127.0.0.1:18443' \
+  'https://api.internal.example/v1/models'
+```
+
+把 `/v1/models` 换成真实接口，并按需添加认证信息。`--connect-to` 只改变
+curl 实际连接的位置，不改变请求 URL。目标是 HTTPS 服务时不要使用
+`http://`：daemon 只透传 TCP，不会在 HTTP 和 HTTPS 之间转换协议。
 
 查看运行状态或调试日志：
 

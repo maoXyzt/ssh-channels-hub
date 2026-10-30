@@ -186,7 +186,22 @@ struct ClientHandler {
 #[derive(Clone)]
 struct ReverseDestination {
   channel_name: String,
-  local_addr: String,
+  local_host: String,
+  local_port: u16,
+}
+
+impl ReverseDestination {
+  async fn connect(&self) -> std::io::Result<TcpStream> {
+    TcpStream::connect((self.local_host.as_str(), self.local_port)).await
+  }
+
+  fn local_addr(&self) -> String {
+    if self.local_host.contains(':') {
+      format!("[{}]:{}", self.local_host, self.local_port)
+    } else {
+      format!("{}:{}", self.local_host, self.local_port)
+    }
+  }
 }
 
 type ReverseRoutes = Arc<StdRwLock<HashMap<u32, ReverseDestination>>>;
@@ -302,7 +317,7 @@ impl client::Handler for ClientHandler {
       return Ok(());
     };
 
-    match TcpStream::connect(&destination.local_addr).await {
+    match destination.connect().await {
       Ok(mut stream) => {
         let mut channel_stream = channel.into_stream();
         let channel_name = destination.channel_name;
@@ -315,7 +330,7 @@ impl client::Handler for ClientHandler {
       Err(e) => {
         error!(
             channel = %destination.channel_name,
-            local = %destination.local_addr,
+            local = %destination.local_addr(),
             error = ?e,
             "Failed to connect to local address for forwarded-tcpip"
         );
@@ -890,7 +905,8 @@ async fn register_forwarded_tcpip(
   };
   let destination = ReverseDestination {
     channel_name: config.name.clone(),
-    local_addr: format!("{}:{}", local_connect_host, local_connect_port),
+    local_host: local_connect_host.clone(),
+    local_port: *local_connect_port,
   };
   match reverse_routes.write() {
     Ok(mut routes) => {
@@ -1413,6 +1429,44 @@ async fn run_direct_tcpip_listener(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[tokio::test]
+  async fn reverse_destination_connects_by_local_hostname() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let local_port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+      let (mut stream, _) = listener.accept().await.unwrap();
+      let mut request = [0; 4];
+      stream.read_exact(&mut request).await.unwrap();
+      assert_eq!(&request, b"ping");
+      stream.write_all(b"pong").await.unwrap();
+    });
+
+    let destination = ReverseDestination {
+      channel_name: "internal-api".into(),
+      local_host: "localhost".into(),
+      local_port,
+    };
+    let mut stream = destination.connect().await.unwrap();
+    stream.write_all(b"ping").await.unwrap();
+    let mut response = [0; 4];
+    stream.read_exact(&mut response).await.unwrap();
+    assert_eq!(&response, b"pong");
+    server.await.unwrap();
+  }
+
+  #[test]
+  fn reverse_destination_brackets_ipv6_local_address() {
+    let destination = ReverseDestination {
+      channel_name: "internal-api".into(),
+      local_host: "::1".into(),
+      local_port: 443,
+    };
+
+    assert_eq!(destination.local_addr(), "[::1]:443");
+  }
 
   #[test]
   fn auth_success_helper_accepts_true() {
