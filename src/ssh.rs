@@ -196,7 +196,11 @@ impl ReverseDestination {
   }
 
   fn local_addr(&self) -> String {
-    format!("{}:{}", self.local_host, self.local_port)
+    if self.local_host.contains(':') {
+      format!("[{}]:{}", self.local_host, self.local_port)
+    } else {
+      format!("{}:{}", self.local_host, self.local_port)
+    }
   }
 }
 
@@ -1451,6 +1455,17 @@ mod tests {
     stream.read_exact(&mut response).await.unwrap();
     assert_eq!(&response, b"pong");
     server.await.unwrap();
+  }
+
+  #[test]
+  fn reverse_destination_brackets_ipv6_local_address() {
+    let destination = ReverseDestination {
+      channel_name: "internal-api".into(),
+      local_host: "::1".into(),
+      local_port: 443,
+    };
+
+    assert_eq!(destination.local_addr(), "[::1]:443");
   }
 
   #[test]

@@ -204,7 +204,7 @@ remote    = "18443" # edge-server 监听 127.0.0.1:18443
 ```
 
 **解释：** 每次连接到 `edge-server` 的 `127.0.0.1:18443` 时，本机都会解析
-`api.internal.example` 并连接其 443 端口，`/v1` 请求路径原样透传。如需接受服务器外部连接，将 `remote` 改为
+`api.internal.example` 并连接其 443 端口。客户端必须在请求 URL 中包含 `/v1`，配置中的路径不会自动添加。如需接受服务器外部连接，将 `remote` 改为
 `"0.0.0.0:18443"`，并在 `sshd_config` 中设置 `GatewayPorts clientspecified`。
 
 完整字段说明：[docs/configuration.md](docs/configuration.md)。

@@ -282,8 +282,9 @@ local     = "https://api.internal.example/v1"
 ```
 
 Each connection to the server's `127.0.0.1:18443` makes this machine resolve
-`api.internal.example` and connect to port 443. The URL path and TLS stream are
-forwarded unchanged.
+`api.internal.example` and connect to port 443. The configured `/v1` path is not
+added to client requests: clients must include it in their request URLs. The
+daemon forwards only client-sent bytes, passing the TLS stream through unchanged.
 
 #### 4.5 Listen on every local interface
 
@@ -737,7 +738,9 @@ local     = "https://api.internal.example/v1"
 ```
 
 每个连接到服务器 `127.0.0.1:18443` 的请求，都会让本机重新解析
-`api.internal.example` 并连接其 443 端口，URL 请求路径和 TLS 数据流原样转发。
+`api.internal.example` 并连接其 443 端口。配置中的 `/v1` 不会自动加入客户端请求，
+客户端必须在请求 URL 中包含该路径。daemon 只转发客户端实际发送的字节，TLS
+数据流原样透传。
 
 #### 4.5 监听到所有网卡
 

@@ -200,7 +200,7 @@ local     = "https://api.internal.example/v1"
 remote    = "18443" # edge-server binds 127.0.0.1:18443
 ```
 
-**Explanation:** For every connection to `127.0.0.1:18443` on `edge-server`, this machine resolves `api.internal.example` and connects to port 443. The `/v1` request path passes through unchanged. To accept external connections on the server, set `remote = "0.0.0.0:18443"` and configure `GatewayPorts clientspecified` in `sshd_config`.
+**Explanation:** For every connection to `127.0.0.1:18443` on `edge-server`, this machine resolves `api.internal.example` and connects to port 443. Clients must include `/v1` in their request URLs; the configured path is not added automatically. To accept external connections on the server, set `remote = "0.0.0.0:18443"` and configure `GatewayPorts clientspecified` in `sshd_config`.
 
 Full field reference: [docs/configuration.md](docs/configuration.md).
 
