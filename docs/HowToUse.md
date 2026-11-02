@@ -132,28 +132,72 @@ After startup:
 `ssh-channels-hub test` checks local listeners only. Test `remote->local`
 channels from the server side.
 
-For mode selection and complete TCP versus gateway examples, see the
-[configuration reference](configuration.md).
+#### Access a fixed HTTPS/WSS service
 
-#### HTTP-to-HTTPS gateway
+Suppose the daemon can resolve and reach `api.internal.example:443`, and clients
+run on the SSH server. Choose one of the following configurations; they use the
+same listener port and should not be enabled together.
+`edge-server` must be an alias in the daemon machine's `~/.ssh/config`.
 
-To expose a fixed internal HTTPS gateway without configuring DNS or certificates
-on the server, use `http-gateway` mode:
+**Option A: default TCP, with TLS handled by the client**
+
+Use this for end-to-end TLS, mTLS, HTTP/2, or clients that already support
+connecting through a tunnel while keeping the upstream hostname.
 
 ```toml
 [[channels]]
-name      = "llm-gateway"
-hostname  = "remote-server"
+name      = "https-tcp"
+hostname  = "edge-server"
 direction = "remote->local"
 remote    = "5443"
-local     = "https://gateway.internal.example"
+local     = "api.internal.example:443"
+# mode = "tcp" is the default
+```
+
+Start the daemon with this configuration using `ssh-channels-hub start`.
+On the SSH server, test the tunnel:
+
+```sh
+curl --connect-to api.internal.example:443:127.0.0.1:5443 https://api.internal.example/v1
+```
+
+`--connect-to` changes the connection address while preserving the upstream
+hostname for TLS verification, SNI and Host. WSS clients likewise need to
+connect through the tunnel while preserving that hostname; how to configure
+this depends on the client. Using `https://127.0.0.1:5443` directly may fail
+certificate validation.
+
+**Option B: HTTP gateway, with upstream TLS handled by the daemon**
+
+Use this when clients should use loopback HTTP/WS URLs without configuring
+upstream hostname mapping on the SSH server.
+
+```toml
+[[channels]]
+name      = "https-gateway"
+hostname  = "edge-server"
+direction = "remote->local"
+remote    = "5443"
+local     = "https://api.internal.example"
 mode      = "http-gateway"
 ```
 
-On the server, call `http://127.0.0.1:5443/v1`. The daemon validates the
-upstream certificate and supplies its Host and SNI; streaming responses remain
-streaming. The HTTP listener must stay on loopback, and the server must use
-`GatewayPorts no` or `clientspecified` so it is not exposed on other interfaces.
+The daemon must trust the upstream certificate through its native root store.
+Set the SSH server's `GatewayPorts` to `no` or `clientspecified`, then start the
+daemon with the chosen configuration. On the SSH server:
+
+```sh
+curl http://127.0.0.1:5443/v1
+```
+
+Connect a WebSocket client to `ws://127.0.0.1:5443/<actual-websocket-path>`,
+replacing the placeholder with the application's endpoint. HTTP and WS share
+this port and become HTTPS and WSS upstream. The host:port form
+`local = "api.internal.example:443"` works too.
+
+The gateway does not add a path prefix or rewrite application URLs.
+For TLS, application URL and protocol limits, see the
+[configuration reference](configuration.md#forwarding-modes).
 
 ---
 
@@ -539,26 +583,63 @@ local     = "80"                # 收到连接桥接到本机 127.0.0.1:80
 
 **注意**:`ssh-channels-hub test` 仅测本地监听端口，不验证远程转发，需在服务器侧实际连接验证。
 
-两种模式的选择、TCP 与 gateway 的完整例子见[配置参考](configuration.md)。
+#### 访问固定的 HTTPS/WSS 服务
 
-#### HTTP 转 HTTPS gateway
+假设 daemon 能解析并访问 `api.internal.example:443`，客户端运行在 SSH 服务器上。
+以下配置二选一，它们使用相同监听端口，不应同时启用。
+`edge-server` 须是 daemon 所在机器的 `~/.ssh/config` 中的 alias。
 
-如果要在服务器上使用固定的内网 HTTPS gateway，同时不配置 DNS 或证书，可使用
-`http-gateway` 模式：
+**方式 A：默认 TCP，由客户端处理 TLS**
+
+适用于端到端 TLS、mTLS、HTTP/2，或客户端已经支持通过隧道连接并保留上游域名的场景。
 
 ```toml
 [[channels]]
-name      = "llm-gateway"
-hostname  = "remote-server"
+name      = "https-tcp"
+hostname  = "edge-server"
 direction = "remote->local"
 remote    = "5443"
-local     = "https://gateway.internal.example"
+local     = "api.internal.example:443"
+# 默认 mode = "tcp"，可省略
+```
+
+使用该配置运行 `ssh-channels-hub start`，然后在 SSH 服务器上验证：
+
+```sh
+curl --connect-to api.internal.example:443:127.0.0.1:5443 https://api.internal.example/v1
+```
+
+`--connect-to` 只改变连接地址，保留上游域名用于 TLS 证书校验、SNI 和 Host。
+WSS 客户端也需要通过隧道连接并保留该域名，具体配置取决于客户端。
+直接访问 `https://127.0.0.1:5443` 可能无法通过证书校验。
+
+**方式 B：HTTP gateway，由 daemon 处理上游 TLS**
+
+适用于希望客户端使用 loopback HTTP/WS URL，且无需在 SSH 服务器上配置上游域名映射的场景。
+
+```toml
+[[channels]]
+name      = "https-gateway"
+hostname  = "edge-server"
+direction = "remote->local"
+remote    = "5443"
+local     = "https://api.internal.example"
 mode      = "http-gateway"
 ```
 
-在服务器上请求 `http://127.0.0.1:5443/v1`。daemon 校验上游证书并提供正确的
-Host 和 SNI，流式响应不会被缓冲。HTTP 监听必须保持 loopback，服务器必须使用
-`GatewayPorts no` 或 `clientspecified`，避免端口暴露到其他网卡。
+daemon 须通过系统根证书信任上游证书。将 SSH 服务器的 `GatewayPorts` 设为
+`no` 或 `clientspecified`，再使用所选配置启动 daemon。在 SSH 服务器上执行：
+
+```sh
+curl http://127.0.0.1:5443/v1
+```
+
+WebSocket 客户端连接 `ws://127.0.0.1:5443/<实际的WebSocket路径>`，
+将占位路径替换为应用的真实端点。HTTP 和 WS 共用此端口，上游分别使用 HTTPS 和 WSS。
+也可写为 `local = "api.internal.example:443"`。
+
+Gateway 不添加路径前缀，也不改写应用 URL。
+TLS、应用 URL 与协议限制见[配置参考](configuration.md#转发模式)。
 
 ---
 

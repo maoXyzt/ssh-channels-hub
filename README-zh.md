@@ -132,61 +132,37 @@ Endpoint 接受以下写法：
 
 对于 `remote->local`，本机会在每次收到远端连接时解析并连接 `local` 域名。URL 路径不属于 TCP 连接目标。默认 `tcp` 模式下，HTTPS 保持端到端传输：daemon 不终止 TLS，也不改写 Host、SNI 或请求路径。
 
-对于固定的 HTTPS gateway，可以使用 `http-gateway` 模式：远端客户端发送 HTTP/1.1，daemon 使用正确的 Host 和 SNI 向上游发起 HTTPS 请求。远端监听必须是 loopback，使明文 HTTP 仅存在于 SSH 隧道内：
-
-```toml
-[[channels]]
-name      = "llm-gateway"
-hostname  = "edge-server"
-direction = "remote->local"
-remote    = "5443"
-local     = "https://gateway.internal.example"
-mode      = "http-gateway"
-```
-
-在 `http-gateway` 模式下，`local = "host:port"` 同样使用 TLS 连接上游。`https://` 写法也同时支持 HTTPS 与 WSS：配置指定上游 TLS，WebSocket 由请求中的 Upgrade 决定。
-
-远端客户端直接使用 `http://127.0.0.1:5443/v1`，无需配置 `/etc/hosts` 或 `127.0.0.1` 证书。请求路径、认证 header、body 和流式响应都会保留；支持 WebSocket 升级（通过 `ws://127.0.0.1:5443/...` 访问 WSS 上游），不支持 CONNECT 或其他协议升级。服务器的 `sshd_config` 必须使用 `GatewayPorts no` 或 `clientspecified`：`GatewayPorts yes` 会忽略请求的 loopback 地址，可能把明文监听暴露到所有网卡。
-
-
-按由谁处理 TLS 来选择模式：
+#### 选择转发模式
 
 | 需求 | 模式 |
 | --- | --- |
-| 数据库或其他 TCP 协议、端到端 TLS、客户端证书（mTLS）、HTTP/2 透传 | 默认 `tcp`，省略 `mode` 即可 |
-| daemon 能访问固定 HTTPS/WSS 服务，希望远端使用 loopback HTTP/WS，并由 daemon 设置上游 Host/SNI | `http-gateway` |
+| 转发 TCP，由客户端处理 TLS，包括 HTTPS/WSS、mTLS 或 HTTP/2 | 默认 `tcp`，省略 `mode` |
+| 由 daemon 为固定 HTTPS/WSS 服务处理 TLS 和上游 Host/SNI | `http-gateway`，客户端使用 HTTP/WS |
 
-同时使用 HTTPS 和 WSS 并不要求启用 gateway，默认 TCP 转发也支持两者。
-仅写 `https://` endpoint 不会自动启用 gateway。TCP 模式下直接访问
-`https://127.0.0.1:<port>` 可能无法通过证书校验，客户端仍需使用上游域名作为 TLS
-和 Host 的目标。
+两种模式都支持 HTTPS 和 WSS。仅写 `https://` endpoint 不会启用 gateway；
+在 TCP 模式下，它只提供目标域名和端口。
 
-例如，以下反向隧道保留端到端 TLS：
+使用 gateway 时，添加以下反向 channel：
 
 ```toml
 [[channels]]
-name      = "prefect-tcp"
+name      = "https-gateway"
 hostname  = "edge-server"
 direction = "remote->local"
 remote    = "5443"
-local     = "prefect.mmdl.zoedev.top:443"
-# 默认 mode = "tcp"，可省略
+local     = "https://api.internal.example"
+mode      = "http-gateway"
 ```
 
-在 SSH 服务器上执行以下命令，通过隧道连接，同时保留正确的 TLS 校验域名和 Host：
+在 SSH 服务器上使用 `curl http://127.0.0.1:5443/v1`；
+WebSocket 客户端连接 `ws://127.0.0.1:5443/<实际的WebSocket路径>`。
+两者连接同一个 TLS 上游，`local = "api.internal.example:443"` 与 HTTPS URL 等效。
 
-```sh
-curl --connect-to prefect.mmdl.zoedev.top:443:127.0.0.1:5443 https://prefect.mmdl.zoedev.top/
-```
+Gateway 必须监听 loopback，SSH 服务器须使用 `GatewayPorts no` 或
+`clientspecified`。客户端到 loopback 监听的连接是明文，服务器与 daemon 之间由 SSH 加密。
 
-需要 gateway 时，在同一配置中增加 `mode = "http-gateway"`，然后使用
-`curl http://127.0.0.1:5443/`；WebSocket 客户端使用
-`ws://127.0.0.1:5443/<实际的WebSocket路径>`。两者连接同一个 TLS 上游；
-`local = "https://prefect.mmdl.zoedev.top/"` 与上述 host:port 写法等效。
-客户端必须支持 HTTP/WS loopback URL。daemon 使用系统根证书验证上游证书，
-此模式提供 HTTP/1.1 和 WebSocket 转发，未提供上游客户端证书配置，也不改写响应中的
-重定向、Cookie 或 HTML URL。若应用生成绝对 URL，可能还需要配置应用的 public/base URL，
-使其与客户端的访问地址一致。
+完整操作见[使用示例](docs/HowToUse.md#访问固定的-httpswss-服务)，
+配置语义与限制见[配置参考](docs/configuration.md#转发模式)。
 
 ### Web 状态页
 
