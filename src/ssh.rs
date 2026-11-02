@@ -865,6 +865,10 @@ fn channel_status(config: &ChannelConfig, health: &Arc<StdMutex<ChannelHealth>>)
     name: config.name.clone(),
     hostname: config.hostname.clone(),
     direction,
+    mode: match &config.params {
+      ChannelTypeParams::DirectTcpIp { .. } => crate::config::ChannelMode::Tcp,
+      ChannelTypeParams::ForwardedTcpIp { mode, .. } => *mode,
+    },
     local,
     remote,
     health,

@@ -1,4 +1,4 @@
-use crate::config::{Direction, WebConfig};
+use crate::config::{ChannelMode, Direction, WebConfig};
 use crate::error::{AppError, Result};
 use crate::service::{ChannelHealth, ServiceManager, ServiceState, ServiceStatus};
 use std::fmt::Write as _;
@@ -235,10 +235,38 @@ fn render(status: &ServiceStatus, page_context: &PageContext) -> String {
         Direction::LocalToRemote => ("outbound", "Outbound", "SSH -L", "→"),
         Direction::RemoteToLocal => ("inbound", "Inbound", "SSH -R", "←"),
       };
+    let is_gateway = channel.mode == ChannelMode::HttpGateway;
+    let local_label = if is_gateway {
+      "HTTPS upstream"
+    } else {
+      "Local"
+    };
+    let remote_label = if is_gateway {
+      "Remote HTTP listener"
+    } else {
+      "Remote"
+    };
+    let mode_badge = if is_gateway {
+      "<span class=\"mode-badge\">HTTP Gateway · TLS</span>"
+    } else {
+      ""
+    };
+    let action_label = if is_gateway {
+      "Open upstream"
+    } else {
+      "Open local"
+    };
     let action = local_url(&channel.local)
       .map(|url| {
+        if is_gateway {
+          url.replacen("http://", "https://", 1)
+        } else {
+          url
+        }
+      })
+      .map(|url| {
         format!(
-          "<a class=\"open\" href=\"{}\" target=\"_blank\" rel=\"noreferrer\">Open local</a>",
+          "<a class=\"open\" href=\"{}\" target=\"_blank\" rel=\"noreferrer\">{action_label}</a>",
           escape_html(&url)
         )
       })
@@ -254,7 +282,7 @@ fn render(status: &ServiceStatus, page_context: &PageContext) -> String {
 
     let _ = write!(
       rows,
-      "<tr><td class=\"channel\" data-label=\"Channel\"><strong>{}</strong><span class=\"direction {}\"><i aria-hidden=\"true\">{}</i><b>{}</b><code>{}</code></span></td><td class=\"route-cell\" data-label=\"Route\"><div class=\"route {}\"><div class=\"endpoint local\"><span>Local</span><code>{}</code></div><div class=\"rail {}\" aria-label=\"{}\"><i></i><b aria-hidden=\"true\">{}</b></div><div class=\"endpoint remote\"><span>Remote</span><code>{}</code><small class=\"ssh-host\">SSH host <b>{}</b></small></div></div></td><td class=\"health-cell\" data-label=\"Health\"><span class=\"health {}\"><i></i>{}</span>{}</td><td class=\"action\">{}</td></tr>",
+      "<tr><td class=\"channel\" data-label=\"Channel\"><strong>{}</strong>{mode_badge}<span class=\"direction {}\"><i aria-hidden=\"true\">{}</i><b>{}</b><code>{}</code></span></td><td class=\"route-cell\" data-label=\"Route\"><div class=\"route {}\"><div class=\"endpoint local\"><span>{local_label}</span><code>{}</code></div><div class=\"rail {}\" aria-label=\"{}\"><i></i><b aria-hidden=\"true\">{}</b></div><div class=\"endpoint remote\"><span>{remote_label}</span><code>{}</code><small class=\"ssh-host\">SSH host <b>{}</b></small></div></div></td><td class=\"health-cell\" data-label=\"SSH health\"><span class=\"health {}\"><i></i>{}</span>{}</td><td class=\"action\">{}</td></tr>",
       escape_html(&channel.name),
       direction_class,
       direction_arrow,
@@ -278,6 +306,11 @@ fn render(status: &ServiceStatus, page_context: &PageContext) -> String {
     rows.push_str("<tr><td class=\"empty\" colspan=\"4\"><div class=\"empty-route\"><i></i><span></span><i></i></div><strong>No channels configured</strong></td></tr>");
   }
 
+  let gateways = status
+    .channels
+    .iter()
+    .filter(|channel| channel.mode == ChannelMode::HttpGateway)
+    .count();
   let connected = status.connected_count();
   let total = status.total_count();
   let coverage = (connected * 100).checked_div(total).unwrap_or(0);
@@ -346,9 +379,16 @@ tr:hover .rail i::before,tr:hover .rail i::after{{background:var(--surface-hover
 .empty-route{{display:flex;align-items:center;justify-content:center;width:132px;margin:0 auto}}.empty-route i{{width:9px;height:9px;border:2px solid var(--muted);border-radius:50%}}.empty-route span{{width:96px;height:1px;background:var(--line-strong)}}
 @media(prefers-color-scheme:dark){{:root{{--canvas:#111614;--surface:#171d1a;--surface-hover:#1b221f;--ink:#e7ece9;--secondary:#b4bfba;--tertiary:#84918b;--muted:#66736d;--line:rgba(231,236,233,.13);--line-soft:rgba(231,236,233,.08);--line-strong:rgba(231,236,233,.22);--green:#58b98a;--green-soft:#173b2a;--amber:#d8a847;--amber-soft:#3d3016;--red:#df7b71;--red-soft:#40201e;--blue:#70acd4;--blue-soft:#193247;--inbound:#d68ab8;--inbound-soft:#3d2032}}}}
 @media(max-width:760px){{.frame{{width:calc(100% - 24px);padding:24px 0 40px}}.topbar{{align-items:flex-start;flex-direction:column;gap:20px;padding-bottom:20px}}.overview{{width:100%;max-width:100%;justify-content:space-between}}.divider{{margin-left:auto}}.config-context{{grid-template-columns:1fr;gap:10px}}.section-heading{{align-items:flex-start;flex-direction:column;gap:8px;margin-top:24px}}.section-meta{{width:100%;justify-content:space-between}}table,tbody{{display:block;width:100%}}thead{{display:none}}tbody tr{{display:grid;width:100%;min-width:0;grid-template-columns:minmax(0,1fr) auto;padding:16px 14px;border-bottom:1px solid var(--line-soft)}}td{{display:block;min-width:0;padding:4px 0;border:0}}td::before{{content:attr(data-label);display:block;margin-bottom:3px;color:var(--muted);font-size:9px;font-weight:750;text-transform:uppercase}}.channel{{width:auto}}.route-cell,.health-cell{{grid-column:1/-1;width:auto;margin-top:12px}}.route{{grid-template-columns:minmax(0,1fr) 54px minmax(0,1fr);gap:6px}}.rail b{{padding:1px 4px}}.action{{grid-column:2;grid-row:1;width:auto;padding-left:10px;align-self:start}}.health-detail{{max-width:none}}}}
+.mode-badge{{display:inline-flex;margin-top:6px;padding:3px 8px;border:1px solid var(--line-strong);border-radius:4px;background:var(--blue-soft);color:var(--blue);font-size:12px;font-weight:650}}
+:root{{--muted:#596760;--tertiary:#53605b}}
+.open,.refresh{{min-height:44px}}.refresh{{flex-wrap:wrap;line-height:1.5}}.count{{overflow-wrap:anywhere}}
+.endpoint span,.config-context span,th{{font-size:12px}}.ssh-host,.ssh-host b,.health-detail{{font-size:12px}}
+@media(prefers-color-scheme:dark){{:root{{--muted:#a2b0a8;--tertiary:#a2b0a8}}}}
+@media(prefers-reduced-motion:reduce){{*,*::before,*::after{{transition:none!important}}}}
+@media(max-width:760px){{body{{font-size:16px}}.channel strong{{font-size:16px}}.section-meta{{flex-wrap:wrap;gap:8px}}}}
 </style>
 </head>
-<body><main class="frame"><header class="topbar"><div class="brand"><span class="mark" aria-hidden="true"><i></i></span><div><p class="kicker">SSH Channels Hub</p><h1>Channel routes</h1></div></div><div class="overview"><div class="service"><span class="health {state_class}"><i></i>{state}</span><span class="service-label">Service</span></div><span class="divider" aria-hidden="true"></span><div class="coverage"><span><strong>{connected}</strong><em> / {total}</em></span><small>Connected</small><span class="coverage-bar" style="width:{coverage}%"></span></div></div></header><div class="config-context" aria-label="Configuration files"><div><span>Config</span><code>{config_path}</code></div><div><span>SSH config</span><code>{ssh_config_path}</code></div></div><div class="section-heading"><div><p>Route ledger</p><h2>Forwarded channels</h2></div><div class="section-meta"><a class="refresh" href="/" title="Refresh now; auto refresh every {WEB_REFRESH_SECONDS} seconds"><i aria-hidden="true">↻</i><span>{WEB_REFRESH_SECONDS}s</span><time data-refreshed-at>Just now</time></a><span class="count">{total} total</span></div></div><section class="panel" aria-label="Channel status"><table><thead><tr><th>Channel</th><th>Local / remote route</th><th>Health</th><th></th></tr></thead><tbody>{rows}</tbody></table></section></main><script src="/refresh.js" defer></script></body>
+<body><main class="frame"><header class="topbar"><div class="brand"><span class="mark" aria-hidden="true"><i></i></span><div><p class="kicker">SSH Channels Hub</p><h1>Channel overview</h1></div></div><div class="overview"><div class="service"><span class="health {state_class}"><i></i>{state}</span><span class="service-label">Service</span></div><span class="divider" aria-hidden="true"></span><div class="coverage"><span><strong>{connected}</strong><em> / {total}</em></span><small>Connected</small><span class="coverage-bar" style="width:{coverage}%"></span></div></div></header><div class="config-context" aria-label="Configuration files"><div><span>Config</span><code>{config_path}</code></div><div><span>SSH config</span><code>{ssh_config_path}</code></div></div><div class="section-heading"><div><p>Route ledger</p><h2>Forwarded channels</h2></div><div class="section-meta"><a class="refresh" href="/" title="Refresh now; auto refresh every {WEB_REFRESH_SECONDS} seconds"><i aria-hidden="true">↻</i><span>{WEB_REFRESH_SECONDS}s</span><time data-refreshed-at>Just now</time></a><span class="count">{total} channels · {gateways} HTTP gateways</span></div></div><section class="panel" aria-label="Channel status"><table><thead><tr><th>Channel</th><th>Local / remote route</th><th>SSH health</th><th></th></tr></thead><tbody>{rows}</tbody></table></section></main><script src="/refresh.js" defer></script></body>
 </html>"#,
     config_path = escape_html(&page_context.config_path),
     ssh_config_path = escape_html(&page_context.ssh_config_path),
@@ -368,6 +408,7 @@ mod tests {
         ChannelStatus {
           name: "web <prod>".into(),
           hostname: "prod <ssh>".into(),
+          mode: ChannelMode::Tcp,
           direction: Direction::LocalToRemote,
           local: "0.0.0.0:8080".into(),
           remote: "web.internal:80".into(),
@@ -376,6 +417,7 @@ mod tests {
         ChannelStatus {
           name: "reverse".into(),
           hostname: "edge-gateway".into(),
+          mode: ChannelMode::Tcp,
           direction: Direction::RemoteToLocal,
           local: "127.0.0.1:3000".into(),
           remote: "127.0.0.1:9000".into(),
@@ -416,6 +458,37 @@ mod tests {
   }
 
   #[test]
+  fn renders_gateway_protocol_topology_and_tls_link() {
+    let page = render(
+      &ServiceStatus {
+        state: ServiceState::Running,
+        channels: vec![ChannelStatus {
+          name: "gateway <prod>".into(),
+          hostname: "edge".into(),
+          direction: Direction::RemoteToLocal,
+          mode: ChannelMode::HttpGateway,
+          local: "[::1]:8443".into(),
+          remote: "127.0.0.1:8080".into(),
+          health: ChannelHealth::Connected,
+        }],
+      },
+      &PageContext {
+        config_path: "config.toml".into(),
+        ssh_config_path: "ssh/config".into(),
+      },
+    );
+    assert!(page.contains("gateway &lt;prod&gt;"));
+    assert!(page.contains("HTTP Gateway · TLS"));
+    assert!(page.contains("HTTPS upstream"));
+    assert!(page.contains("Remote HTTP listener"));
+    assert!(page.contains("href=\"https://[::1]:8443\""));
+    assert!(page.contains("Open upstream"));
+    assert!(!page.contains("href=\"http://127.0.0.1:8080\""));
+    assert!(page.contains("1 channels · 1 HTTP gateways"));
+    assert!(page.contains("SSH health"));
+  }
+
+  #[test]
   fn local_url_formats_ipv6() {
     assert_eq!(local_url("::1:3306").as_deref(), Some("http://[::1]:3306"));
     assert_eq!(
@@ -432,6 +505,7 @@ mod tests {
         channels: vec![ChannelStatus {
           name: "db".into(),
           hostname: "db".into(),
+          mode: ChannelMode::Tcp,
           direction: Direction::LocalToRemote,
           local: "127.0.0.1:3306".into(),
           remote: "127.0.0.1:3306".into(),

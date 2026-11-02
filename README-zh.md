@@ -167,7 +167,9 @@ Gateway 必须监听 loopback，SSH 服务器须使用 `GatewayPorts no` 或
 ### Web 状态页
 
 Web 状态页默认开启，启动时会打印 loopback URL。页面展示 channel 端点、健康
-状态、重试次数、最近错误和主机密钥处置命令。
+状态、重试次数、最近错误和主机密钥处置命令。HTTP Gateway 会显示模式标识、
+远端 HTTP 监听地址和本地 HTTPS 上游，**Open upstream** 使用 HTTPS 打开上游。
+页面中的健康状态表示 SSH 通道状态，不代表上游 HTTP 服务的可用性。
 
 **Open local** 会打开 channel 的本地端点。设置 `[web].enabled = false` 可关闭
 状态页；其他选项见[配置参考](docs/configuration.md)。

@@ -325,6 +325,8 @@ struct ChannelStatusWire {
   name: String,
   #[serde(default)]
   hostname: String,
+  #[serde(default)]
+  mode: crate::config::ChannelMode,
   direction: String, // "local->remote" / "remote->local"
   local: String,
   remote: String,
@@ -359,6 +361,7 @@ fn channel_status_to_wire(c: &service::ChannelStatus) -> ChannelStatusWire {
   ChannelStatusWire {
     name: c.name.clone(),
     hostname: c.hostname.clone(),
+    mode: c.mode,
     direction: c.direction.as_arrow().to_string(),
     local: c.local.clone(),
     remote: c.remote.clone(),
@@ -392,6 +395,7 @@ fn wire_to_channel_status(w: ChannelStatusWire) -> AnyhowResult<service::Channel
     name: w.name,
     hostname: w.hostname,
     direction,
+    mode: w.mode,
     local: w.local,
     remote: w.remote,
     health,
@@ -683,6 +687,7 @@ async fn render_status_once(config_path: &Path) -> StatusFrame {
           name: c.name.clone(),
           hostname: c.hostname.clone(),
           direction: c.direction,
+          mode: c.mode,
           local: format!("{}:{}", c.local.host, c.local.port),
           remote: format!("{}:{}", c.remote.host, c.remote.port),
           health: service::ChannelHealth::Stopped,
@@ -1126,6 +1131,7 @@ mod tests {
       name: name.to_string(),
       hostname: "db-server".to_string(),
       direction: Direction::LocalToRemote,
+      mode: crate::config::ChannelMode::Tcp,
       local: "127.0.0.1:3306".to_string(),
       remote: "db.internal:3306".to_string(),
       health,
@@ -1135,6 +1141,26 @@ mod tests {
   fn round_trip(status: ServiceStatus) -> ServiceStatus {
     let toml = status_to_toml(&status);
     parse_status_toml(&toml).expect("parse round-trip")
+  }
+
+  #[test]
+  fn status_preserves_gateway_mode_and_defaults_legacy_status_to_tcp() {
+    let mut channel = ch("gateway", ChannelHealth::Connected);
+    channel.mode = crate::config::ChannelMode::HttpGateway;
+    channel.direction = Direction::RemoteToLocal;
+    let status = ServiceStatus {
+      state: ServiceState::Running,
+      channels: vec![channel],
+    };
+    let encoded = status_to_toml(&status);
+    let parsed = parse_status_toml(&encoded).unwrap();
+    assert_eq!(
+      parsed.channels[0].mode,
+      crate::config::ChannelMode::HttpGateway
+    );
+    let legacy = encoded.replace("mode = \"http-gateway\"\n", "");
+    let parsed = parse_status_toml(&legacy).unwrap();
+    assert_eq!(parsed.channels[0].mode, crate::config::ChannelMode::Tcp);
   }
 
   #[test]

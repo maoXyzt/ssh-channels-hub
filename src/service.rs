@@ -57,6 +57,7 @@ pub struct ChannelStatus {
   pub name: String,
   pub hostname: String,
   pub direction: Direction,
+  pub mode: crate::config::ChannelMode,
   pub local: String,
   pub remote: String,
   pub health: ChannelHealth,

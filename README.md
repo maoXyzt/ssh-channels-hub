@@ -171,7 +171,7 @@ or [configuration semantics and limits](docs/configuration.md#forwarding-modes).
 
 ### Web status page
 
-The Web status page is enabled by default, and its loopback URL is printed at startup. It shows channel endpoints, health, retries, latest errors, and host-key remediation commands.
+The Web status page is enabled by default, and its loopback URL is printed at startup. It shows channel endpoints, health, retries, latest errors, and host-key remediation commands. HTTP Gateway channels include a mode badge, the remote HTTP listener, and the local HTTPS upstream; **Open upstream** opens the upstream using HTTPS. Health describes the SSH channel, not upstream HTTP availability.
 
 **Open local** opens the channel's local endpoint. Set `[web].enabled = false` to disable the page; see the [configuration reference](docs/configuration.md) for other options.
 
