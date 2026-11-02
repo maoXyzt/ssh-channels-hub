@@ -89,7 +89,8 @@ Load config.toml
 
 Both directions copy data asynchronously in both directions in the default TCP
 mode. A reverse forward in `http-gateway` mode instead passes the SSH stream to
-`http_gateway.rs`, which proxies HTTP/1.1 requests to one fixed HTTPS upstream.
+`http_gateway.rs`, which proxies HTTP/1.1 requests to one fixed HTTPS upstream and relays
+WebSocket bytes bidirectionally after a successful upgrade.
 
 ### 5. Concurrency and state
 
@@ -227,7 +228,7 @@ channels 才能共享 session；使用相同非零远端端口的远程转发会
 
 默认 TCP 模式下，两种方向都以异步方式双向复制数据。`http-gateway` 模式的
 反向转发会把 SSH stream 交给 `http_gateway.rs`，由其向固定 HTTPS 上游代理
-HTTP/1.1 请求。
+HTTP/1.1 请求，并在成功升级后双向转发 WebSocket 字节。
 
 ### 5. 并发与状态
 

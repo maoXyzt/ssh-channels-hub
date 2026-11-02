@@ -61,22 +61,30 @@ remote    = "127.0.0.1:80"
 # remote    = "8022"
 # local     = "80"
 
-# Expose an internal HTTPS service resolved and dialed by this machine:
+# Default TCP: preserves end-to-end TLS; supports HTTPS/WSS, mTLS and HTTP/2.
+# On the SSH server, keep the upstream hostname for TLS verification and Host:
+# curl --connect-to api.internal.example:443:127.0.0.1:18443 https://api.internal.example/v1
 # [[channels]]
-# name      = "internal-api"
+# name      = "https-tcp"
 # hostname  = "example-server"
 # direction = "remote->local"
 # remote    = "18443"
-# local     = "https://api.internal.example/v1"  # URL path is not part of the TCP target
+# local     = "api.internal.example:443"
+# mode      = "tcp"                   # default; may be omitted
 
-# Optional: expose an HTTPS gateway as loopback HTTP on the SSH server.
-# The client uses http://127.0.0.1:5443/v1; no remote /etc/hosts entry is needed.
-# This mode requires remote->local, an HTTPS local URL, and a loopback remote bind.
-# sshd_config must use GatewayPorts no or clientspecified, not GatewayPorts yes.
+# HTTP gateway: daemon handles upstream TLS/Host/SNI; clients use HTTP/WS.
+# Requires remote->local, loopback remote, and GatewayPorts no or clientspecified.
+# Both local forms below use TLS and support HTTPS/WSS; URL paths are ignored.
 # [[channels]]
-# name      = "llm-gateway"
+# name      = "https-gateway"
 # hostname  = "example-server"
 # direction = "remote->local"
 # remote    = "5443"
-# local     = "https://gateway.internal.example"
+# local     = "https://api.internal.example"  # or "api.internal.example:443"
 # mode      = "http-gateway"
+#
+# On the SSH server:
+# curl http://127.0.0.1:5443/v1
+# WebSocket client URL: ws://127.0.0.1:5443/<actual-websocket-path>
+# Mode selection and limitations: docs/configuration.md (Forwarding modes).
+# Complete setup examples: docs/HowToUse.md (Access a fixed HTTPS/WSS service).

@@ -103,31 +103,48 @@ mode, TLS is passed through end-to-end without terminating it or rewriting Host,
 SNI, or request paths. The remote client remains responsible for its URL,
 DNS/hostname mapping, and certificate verification.
 
-For a fixed HTTPS gateway, `mode = "http-gateway"` accepts HTTP/1.1 from the
-remote client and makes upstream HTTPS requests with the gateway's Host and SNI:
+##### Forwarding modes
 
-```toml
-[[channels]]
-name      = "llm-gateway"
-hostname  = "edge-server"
-direction = "remote->local"
-remote    = "5443"
-local     = "https://gateway.internal.example"
-mode      = "http-gateway"
-```
+`mode` defaults to `tcp`. Use `http-gateway` when remote clients should access
+one fixed HTTPS/WSS service through HTTP/WS and the daemon should handle
+upstream TLS and Host/SNI.
 
-The remote client uses `http://127.0.0.1:5443/v1`; no remote `/etc/hosts` entry
-or loopback IP certificate is needed. SSH protects the HTTP leg, and the daemon
-validates the upstream HTTPS certificate using native roots. Request paths,
-authorization headers, bodies, and streaming responses are preserved. The URL
-path in `local` is ignored, as in TCP mode. This mode requires `remote->local`,
-an HTTPS `local` URL, and a loopback `remote` listener. CONNECT and protocol
-upgrades are not supported.
+| Behavior | `tcp` (default) | `http-gateway` |
+| --- | --- | --- |
+| Protocols | Any TCP, including HTTPS/WSS, mTLS and HTTP/2 | HTTP/1.1 and WebSocket |
+| Direction | Either direction | `remote->local` only |
+| Client URL for a TLS upstream | HTTPS/WSS with the upstream hostname | HTTP/WS on the server's loopback port |
+| Upstream TLS | Managed and verified by the client | Managed by the daemon, verified using native roots |
+| Host and SNI | Supplied by the client | Set to the configured upstream |
+| Remote listener | Normal forwarding rules | Loopback only |
 
-The loopback check applies only to the requested bind address. If `sshd_config`
-sets `GatewayPorts yes`, the server ignores that address and binds all
-interfaces, exposing the plaintext HTTP listener. Use `GatewayPorts no` or
-`clientspecified` for gateway channels.
+**Upstream address.** In gateway mode, `local = "https://api.internal.example"`
+and `local = "api.internal.example:443"` both select TLS and support HTTPS/WSS
+on the same upstream. A bare port such as `local = "8443"` means TLS to
+`127.0.0.1:8443`; the upstream certificate must be trusted and valid for that IP.
+Explicit `http://` endpoints are rejected.
+URL paths, queries and fragments in `local` are ignored; each client's request
+path and query are forwarded without adding a prefix.
+
+**Request and response handling.** The gateway streams bodies and preserves
+ordinary headers, including authorization headers, while removing hop-by-hop
+headers and setting the upstream Host. WebSocket upgrades switch to a
+bidirectional byte relay; upgrade requests must use HTTP/1.1. CONNECT and other upgrades are rejected.
+Upstream client-certificate configuration and HTTP/2 forwarding are not provided;
+use TCP mode when those are required.
+
+**Application URLs.** The gateway does not rewrite redirects, cookies or HTML
+URLs. Applications that generate absolute URLs may need their public/base URL
+configured to match the client's access URL. Clients must accept HTTP/WS URLs.
+
+**Listener and transport.** The client-to-loopback connection is plaintext.
+SSH encrypts the server-to-daemon leg; the daemon connects to the upstream using
+TLS. The SSH server must use `GatewayPorts no` or `clientspecified`:
+`GatewayPorts yes` ignores the requested loopback bind and can expose the
+plaintext listener on all interfaces.
+
+For complete configurations and client commands for both modes, see
+[Access a fixed HTTPS/WSS service](HowToUse.md#access-a-fixed-httpswss-service).
 
 Unknown fields are rejected instead of silently ignored.
 
@@ -610,28 +627,40 @@ HTTP / HTTPS URL 未指定端口时分别使用 80 / 443。URL 的 path、query 
 daemon 不终止 TLS，也不改写 Host、SNI 或请求路径；远端客户端仍需自行处理 URL、
 域名映射和证书校验。
 
-对于固定的 HTTPS gateway，可以设置 `mode = "http-gateway"`：远端客户端发送
-HTTP/1.1，daemon 使用 gateway 的 Host 和 SNI 向上游发起 HTTPS 请求：
+##### 转发模式
 
-```toml
-[[channels]]
-name      = "llm-gateway"
-hostname  = "edge-server"
-direction = "remote->local"
-remote    = "5443"
-local     = "https://gateway.internal.example"
-mode      = "http-gateway"
-```
+`mode` 默认为 `tcp`。当远端客户端需要通过 HTTP/WS 访问固定的 HTTPS/WSS 服务，
+并由 daemon 处理上游 TLS 和 Host/SNI 时，使用 `http-gateway`。
 
-远端客户端使用 `http://127.0.0.1:5443/v1`，无需配置远端 `/etc/hosts` 或 loopback
-IP 证书。HTTP 段由 SSH 保护，daemon 使用系统根证书验证上游 HTTPS。请求路径、认证
-header、body 和流式响应都会保留；`local` 中的 URL path 与 TCP 模式一样会被忽略。
-此模式要求 `remote->local`、HTTPS `local` URL 和 loopback `remote` 监听，不支持
-CONNECT 或协议升级。
+| 行为 | 默认 `tcp` | `http-gateway` |
+| --- | --- | --- |
+| 支持协议 | 任意 TCP，包括 HTTPS/WSS、mTLS、HTTP/2 | HTTP/1.1、WebSocket |
+| 方向 | 两种方向均可 | 仅 `remote->local` |
+| 访问 TLS 上游的客户端 URL | 使用上游域名的 HTTPS/WSS | 服务器 loopback 端口上的 HTTP/WS |
+| 上游 TLS | 由客户端建立并验证 | 由 daemon 建立，使用系统根证书验证 |
+| Host 和 SNI | 由客户端提供 | 设置为配置的上游 |
+| 远端监听 | 遵循普通转发规则 | 仅 loopback |
 
-loopback 校验只针对请求的绑定地址。如果 `sshd_config` 设置了 `GatewayPorts yes`，
-服务器会忽略该地址并监听所有网卡，从而暴露明文 HTTP 端口。gateway channel 应使用
-`GatewayPorts no` 或 `clientspecified`。
+**上游地址。** Gateway 模式下，`local = "https://api.internal.example"` 和
+`local = "api.internal.example:443"` 都使用 TLS，并同时支持 HTTPS/WSS。
+纯端口 `local = "8443"` 表示通过 TLS 连接 `127.0.0.1:8443`，
+证书必须受信任且对该 IP 有效。显式的 `http://` endpoint 会被拒绝。`local` URL 中的 path、query、fragment
+被忽略；客户端请求的路径和查询参数原样转发，不添加路径前缀。
+
+**请求与响应。** Gateway 流式转发 body，保留认证等普通 header，移除 hop-by-hop
+header，并设置上游 Host。WebSocket 升级仅接受 HTTP/1.1，升级后进行双向字节转发。
+不支持 CONNECT 或其他协议升级，也未提供上游客户端证书配置和 HTTP/2 转发；
+需要这些能力时使用 TCP 模式。
+
+**应用 URL。** Gateway 不改写重定向、Cookie 或 HTML URL。生成绝对 URL 的应用
+可能需要调整 public/base URL，使其与客户端访问地址一致。客户端必须支持 HTTP/WS URL。
+
+**监听与传输。** 客户端到 loopback 监听的连接是明文，服务器与 daemon 之间由 SSH
+加密，daemon 再通过 TLS 连接上游。SSH 服务器须使用 `GatewayPorts no` 或
+`clientspecified`；`GatewayPorts yes` 会忽略请求的 loopback 地址，可能将明文端口
+暴露到所有网卡。
+
+两种模式的完整配置与客户端命令见[访问固定的 HTTPS/WSS 服务](HowToUse.md#访问固定的-httpswss-服务)。
 
 未识别的字段会直接报错(`deny_unknown_fields`)，不会被静默忽略。
 
