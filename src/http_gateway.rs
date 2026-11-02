@@ -67,7 +67,18 @@ impl HttpGateway {
     let authority = authority_text
       .parse::<Authority>()
       .map_err(|error| format!("Invalid HTTP gateway authority '{authority_text}': {error}"))?;
-    let host_header = HeaderValue::from_str(&authority_text)
+    let host_text = if host.contains(':') {
+      format!("[{host}]")
+    } else {
+      host.to_string()
+    };
+    let is_default_port = matches!((scheme.as_str(), port), ("https", 443) | ("http", 80));
+    let host_value = if is_default_port {
+      host_text
+    } else {
+      authority_text.clone()
+    };
+    let host_header = HeaderValue::from_str(&host_value)
       .map_err(|error| format!("Invalid HTTP gateway Host header: {error}"))?;
     let client = Client::builder(TokioExecutor::new()).build(connector);
     Ok(Self {
@@ -408,5 +419,21 @@ mod tests {
 
     gateway_task.abort();
     connection_task.abort();
+  }
+
+  #[test]
+  fn host_header_omits_only_the_scheme_default_port() {
+    let default_https = HttpGateway::new("gateway.internal", 443).unwrap();
+    assert_eq!(default_https.host_header, "gateway.internal");
+    assert_eq!(default_https.upstream_label, "gateway.internal:443");
+
+    let custom_https = HttpGateway::new("gateway.internal", 8443).unwrap();
+    assert_eq!(custom_https.host_header, "gateway.internal:8443");
+
+    let default_https_ipv6 = HttpGateway::new("::1", 443).unwrap();
+    assert_eq!(default_https_ipv6.host_header, "[::1]");
+
+    let default_http = HttpGateway::new_http_for_test("gateway.internal", 80);
+    assert_eq!(default_http.host_header, "gateway.internal");
   }
 }
