@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod error;
 mod host_check;
+mod http_gateway;
 mod port_check;
 mod service;
 mod ssh;

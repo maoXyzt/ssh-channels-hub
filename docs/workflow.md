@@ -109,6 +109,10 @@ Request tcpip-forward on the server
   -> copy bytes in both directions
 ```
 
+In `http-gateway` mode, the callback instead passes the SSH stream to the HTTP
+gateway module, which makes streaming HTTP/1.1 requests to the fixed HTTPS
+upstream.
+
 Remote forwards with conflicting nonzero bind ports are separated into
 different sessions so callbacks can be routed unambiguously.
 
@@ -255,6 +259,9 @@ SshManager::start
   -> 连接配置的本地 endpoint
   -> 双向复制数据
 ```
+
+`http-gateway` 模式下，回调会把 SSH stream 交给 HTTP gateway 模块，由其向固定
+HTTPS 上游发起流式 HTTP/1.1 请求。
 
 使用相同非零远端端口的冲突转发会拆到不同 session，避免回调路由歧义。
 

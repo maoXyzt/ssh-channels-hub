@@ -38,6 +38,11 @@ toml = "0.8"
 async-trait = "0.1"
 dirs = "5.0"
 owo-colors = { version = "4.1", features = ["supports-colors"] }
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1", "server"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "native-tokio", "ring", "tls12"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
 
 # Drives `cargo release <patch|minor|major|x.y.z> --execute`: bumps the
 # version in Cargo.toml + Cargo.lock, commits, tags `v<version>`, and pushes.

@@ -63,8 +63,19 @@ curl --connect-to 'api.internal.example:443:127.0.0.1:18443' \
 
 Replace `/v1/models` with a real endpoint and add any required authentication.
 The `--connect-to` option only changes where curl connects; it does not change
-the request URL. Do not use `http://` for an HTTPS destination: the daemon
-passes TCP through unchanged and does not convert between HTTP and HTTPS.
+the request URL. Do not use `http://` for an HTTPS destination in the default
+TCP mode: the daemon passes TCP through unchanged and does not convert between
+HTTP and HTTPS.
+
+For a channel with `mode = "http-gateway"`, use the loopback HTTP URL instead;
+the daemon supplies the upstream Host, SNI, and HTTPS certificate verification:
+
+```bash
+curl -v 'http://127.0.0.1:5443/v1/models'
+```
+
+A `502` response means the daemon could not complete the upstream request;
+check its logs for DNS, TCP, or TLS errors.
 
 Check the service status or debug logs:
 
@@ -131,8 +142,17 @@ curl --connect-to 'api.internal.example:443:127.0.0.1:18443' \
 ```
 
 把 `/v1/models` 换成真实接口，并按需添加认证信息。`--connect-to` 只改变
-curl 实际连接的位置，不改变请求 URL。目标是 HTTPS 服务时不要使用
-`http://`：daemon 只透传 TCP，不会在 HTTP 和 HTTPS 之间转换协议。
+curl 实际连接的位置，不改变请求 URL。默认 TCP 模式下，目标是 HTTPS 服务时
+不要使用 `http://`：daemon 只透传 TCP，不会在 HTTP 和 HTTPS 之间转换协议。
+
+对于 `mode = "http-gateway"` 的 channel，远端改用 loopback HTTP URL；daemon
+负责上游 Host、SNI 和 HTTPS 证书校验：
+
+```bash
+curl -v 'http://127.0.0.1:5443/v1/models'
+```
+
+`502` 表示 daemon 无法完成上游请求，应查看日志中的 DNS、TCP 或 TLS 错误。
 
 查看运行状态或调试日志：
 

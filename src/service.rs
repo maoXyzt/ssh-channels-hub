@@ -201,6 +201,7 @@ impl ServiceManager {
                 remote_bind_port,
                 local_connect_host,
                 local_connect_port,
+                ..
               } => {
                 let remote = format!("{}:{}", remote_bind_host, remote_bind_port);
                 let local_dest = format!("{}:{}", local_connect_host, local_connect_port);
@@ -425,6 +426,7 @@ mod tests {
       remote_bind_port: 8080,
       local_connect_host: "127.0.0.1".into(),
       local_connect_port: 8080,
+      mode: crate::config::ChannelMode::Tcp,
     };
     let mut first_remote = duplicate_remote_port.clone();
     first_remote.name = "first-remote".into();

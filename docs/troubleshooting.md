@@ -66,9 +66,17 @@ curl --connect-to 'api.internal.example:443:127.0.0.1:18443' \
   'https://api.internal.example/v1/models'
 ```
 
-The URL scheme in `local` selects the default destination port; it does not
-make the daemon terminate TLS or convert HTTP to HTTPS. See
-[Testing Channel Connections](./testing.md#domain-based-remote-forwards).
+In the default TCP mode, the URL scheme in `local` selects the default
+destination port; it does not make the daemon terminate TLS or convert HTTP to
+HTTPS. See [Testing Channel Connections](./testing.md#domain-based-remote-forwards).
+
+### `502 HTTP gateway upstream request failed`
+
+In `http-gateway` mode, the daemon could not complete the request to the
+configured HTTPS gateway. Run with `start --debug` and check the logged DNS,
+connection, or TLS error. The daemon machine must be able to resolve and reach
+the gateway and trust its certificate. Use `http://127.0.0.1:<port>/...` on the
+remote client, not an HTTPS loopback URL.
 
 ### Debug logs
 
@@ -137,8 +145,15 @@ curl --connect-to 'api.internal.example:443:127.0.0.1:18443' \
   'https://api.internal.example/v1/models'
 ```
 
-`local` 中的 URL scheme 只用于选择默认目标端口；daemon 不会终止 TLS，也不会
-把 HTTP 转成 HTTPS。完整测试步骤见[测试 Channel 连接](./testing.md#基于域名的反向中转)。
+默认 TCP 模式下，`local` 中的 URL scheme 只用于选择默认目标端口；daemon 不会
+终止 TLS，也不会把 HTTP 转成 HTTPS。完整测试步骤见[测试 Channel 连接](./testing.md#基于域名的反向中转)。
+
+### `502 HTTP gateway upstream request failed`
+
+在 `http-gateway` 模式下，daemon 无法完成到所配置 HTTPS gateway 的请求。使用
+`start --debug` 查看日志中的 DNS、连接或 TLS 错误。daemon 所在机器必须能够解析
+并访问 gateway，且信任其证书。远端客户端应使用 `http://127.0.0.1:<port>/...`，
+而不是 HTTPS loopback URL。
 
 ### 调试日志
 

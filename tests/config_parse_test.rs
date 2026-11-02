@@ -2,7 +2,7 @@
 // against ~/.ssh/config and apply [auth.<alias>] overrides.
 
 use ssh_channels_hub::config::{
-  AppConfig, AuthConfig, ChannelTypeParams, ConnectionConfig, Direction,
+  AppConfig, AuthConfig, ChannelMode, ChannelTypeParams, ConnectionConfig, Direction,
 };
 use std::path::PathBuf;
 
@@ -257,6 +257,7 @@ local = "127.0.0.1:80"
       remote_bind_port,
       local_connect_host,
       local_connect_port,
+      ..
     } => {
       assert_eq!(remote_bind_host, "0.0.0.0");
       assert_eq!(*remote_bind_port, 8022);
@@ -492,5 +493,97 @@ remote = "127.0.0.1:3306"
   match &channels[0].params {
     ChannelTypeParams::DirectTcpIp { listen_host, .. } => assert_eq!(listen_host, "::1"),
     _ => panic!("expected DirectTcpIp"),
+  }
+}
+
+#[test]
+fn http_gateway_maps_to_a_reverse_forward() {
+  let config = parse(
+    r#"
+[[channels]]
+name = "llm-gateway"
+hostname = "myserver"
+direction = "remote->local"
+remote = "5443"
+local = "https://gateway.internal"
+mode = "http-gateway"
+"#,
+  );
+
+  let channels = config.build_channels().expect("build HTTP gateway channel");
+  match &channels[0].params {
+    ChannelTypeParams::ForwardedTcpIp {
+      remote_bind_host,
+      remote_bind_port,
+      local_connect_host,
+      local_connect_port,
+      mode,
+    } => {
+      assert_eq!(remote_bind_host, "127.0.0.1");
+      assert_eq!(*remote_bind_port, 5443);
+      assert_eq!(local_connect_host, "gateway.internal");
+      assert_eq!(*local_connect_port, 443);
+      assert_eq!(*mode, ChannelMode::HttpGateway);
+    }
+    other => panic!("expected ForwardedTcpIp, got {other:?}"),
+  }
+}
+
+#[test]
+fn channel_mode_defaults_to_tcp() {
+  let config = parse(
+    r#"
+[[channels]]
+name = "plain"
+hostname = "myserver"
+direction = "remote->local"
+remote = "5443"
+local = "https://gateway.internal"
+"#,
+  );
+
+  let channels = config.build_channels().expect("build TCP channel");
+  match &channels[0].params {
+    ChannelTypeParams::ForwardedTcpIp { mode, .. } => assert_eq!(*mode, ChannelMode::Tcp),
+    other => panic!("expected ForwardedTcpIp, got {other:?}"),
+  }
+}
+
+#[test]
+fn http_gateway_rejects_unsafe_or_ambiguous_configuration() {
+  let cases = [
+    (
+      "local->remote",
+      "5443",
+      "https://gateway.internal",
+      "direction",
+    ),
+    ("remote->local", "5443", "http://gateway.internal", "HTTPS"),
+    ("remote->local", "5443", "gateway.internal:443", "HTTPS"),
+    (
+      "remote->local",
+      "0.0.0.0:5443",
+      "https://gateway.internal",
+      "loopback",
+    ),
+  ];
+
+  for (direction, remote, local, expected_error) in cases {
+    let config = parse(&format!(
+      r#"
+[[channels]]
+name = "invalid-gateway"
+hostname = "myserver"
+direction = "{direction}"
+remote = "{remote}"
+local = "{local}"
+mode = "http-gateway"
+"#
+    ));
+    let error = config.build_channels().unwrap_err().to_string();
+    assert!(
+      error.contains(expected_error),
+      "expected '{expected_error}' in: {error}"
+    );
   }
 }

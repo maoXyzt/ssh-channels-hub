@@ -59,6 +59,21 @@ impl Serialize for Direction {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointScheme {
+  Http,
+  Https,
+}
+
+impl EndpointScheme {
+  fn as_str(self) -> &'static str {
+    match self {
+      Self::Http => "http",
+      Self::Https => "https",
+    }
+  }
+}
+
 /// `host:port`, `[ipv6]:port`, bare `port` (host defaults to 127.0.0.1), or an
 /// HTTP/HTTPS URL (path components are ignored).
 ///
@@ -72,6 +87,7 @@ impl Serialize for Direction {
 pub struct Endpoint {
   pub host: String,
   pub port: u16,
+  pub scheme: Option<EndpointScheme>,
 }
 
 impl Endpoint {
@@ -92,6 +108,7 @@ impl Endpoint {
       return Ok(Endpoint {
         host: "127.0.0.1".to_string(),
         port,
+        scheme: None,
       });
     }
 
@@ -114,6 +131,7 @@ impl Endpoint {
       return Ok(Endpoint {
         host: host.to_string(),
         port,
+        scheme: None,
       });
     }
 
@@ -136,6 +154,7 @@ impl Endpoint {
     Ok(Endpoint {
       host: host.to_string(),
       port,
+      scheme: None,
     })
   }
 
@@ -143,10 +162,10 @@ impl Endpoint {
     let (scheme, rest) = s
       .split_once("://")
       .expect("URL parsing is only attempted when a scheme separator is present");
-    let default_port = if scheme.eq_ignore_ascii_case("http") {
-      80
+    let (scheme, default_port) = if scheme.eq_ignore_ascii_case("http") {
+      (EndpointScheme::Http, 80)
     } else if scheme.eq_ignore_ascii_case("https") {
-      443
+      (EndpointScheme::Https, 443)
     } else {
       return Err(AppError::Config(format!(
         "invalid endpoint '{}': unsupported URL scheme '{}'; expected \"http\" or \"https\"",
@@ -188,7 +207,9 @@ impl Endpoint {
       }
     };
 
-    Self::parse(&endpoint)
+    let mut parsed = Self::parse(&endpoint)?;
+    parsed.scheme = Some(scheme);
+    Ok(parsed)
   }
 }
 
@@ -207,8 +228,24 @@ impl Serialize for Endpoint {
   where
     S: Serializer,
   {
-    serializer.serialize_str(&format!("{}:{}", self.host, self.port))
+    let authority = if self.host.contains(':') {
+      format!("[{}]:{}", self.host, self.port)
+    } else {
+      format!("{}:{}", self.host, self.port)
+    };
+    match self.scheme {
+      Some(scheme) => serializer.serialize_str(&format!("{}://{}", scheme.as_str(), authority)),
+      None => serializer.serialize_str(&authority),
+    }
   }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChannelMode {
+  #[default]
+  Tcp,
+  HttpGateway,
 }
 
 /// Channel definition referencing an SSH config Host alias.
@@ -226,6 +263,8 @@ pub struct ConnectionConfig {
   pub direction: Direction,
   pub local: Endpoint,
   pub remote: Endpoint,
+  #[serde(default)]
+  pub mode: ChannelMode,
 }
 
 /// SSH channel configuration (runtime — built by combining config.toml + ~/.ssh/config)
@@ -278,6 +317,7 @@ pub enum ChannelTypeParams {
     remote_bind_port: u16,
     local_connect_host: String,
     local_connect_port: u16,
+    mode: ChannelMode,
   },
 }
 
@@ -419,6 +459,37 @@ impl Default for ReconnectionConfig {
 }
 
 impl ConnectionConfig {
+  fn validate(&self) -> Result<()> {
+    if self.mode != ChannelMode::HttpGateway {
+      return Ok(());
+    }
+    if self.direction != Direction::RemoteToLocal {
+      return Err(AppError::Config(format!(
+        "Channel '{}': mode \"http-gateway\" requires direction \"remote->local\"",
+        self.name
+      )));
+    }
+    if self.local.scheme != Some(EndpointScheme::Https) {
+      return Err(AppError::Config(format!(
+        "Channel '{}': mode \"http-gateway\" requires local to be an HTTPS gateway URL",
+        self.name
+      )));
+    }
+    let remote_is_loopback = self
+      .remote
+      .host
+      .parse::<IpAddr>()
+      .map(|address| address.is_loopback())
+      .unwrap_or_else(|_| self.remote.host.eq_ignore_ascii_case("localhost"));
+    if !remote_is_loopback {
+      return Err(AppError::Config(format!(
+        "Channel '{}': mode \"http-gateway\" requires a loopback remote listener because the SSH tunnel carries HTTP",
+        self.name
+      )));
+    }
+    Ok(())
+  }
+
   /// `(host, port)` bound on this machine, or `None` when the bind happens on the server.
   pub fn local_listen_bind(&self) -> Option<(String, u16)> {
     match self.direction {
@@ -565,6 +636,7 @@ impl AppConfig {
 
     let mut channels = Vec::new();
     for conn in &self.channels {
+      conn.validate()?;
       let entry = by_alias
         .get(conn.hostname.as_str())
         .copied()
@@ -637,6 +709,7 @@ impl AppConfig {
           remote_bind_port: conn.remote.port,
           local_connect_host: conn.local.host.clone(),
           local_connect_port: conn.local.port,
+          mode: conn.mode,
         },
       };
 
@@ -1040,11 +1113,14 @@ strict = true
       local: Endpoint {
         host: host.into(),
         port,
+        scheme: None,
       },
       remote: Endpoint {
         host: "127.0.0.1".into(),
         port: 80,
+        scheme: None,
       },
+      mode: ChannelMode::Tcp,
     }
   }
 
