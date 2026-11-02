@@ -74,6 +74,22 @@ the daemon supplies the upstream Host, SNI, and HTTPS certificate verification:
 curl -v 'http://127.0.0.1:5443/v1/models'
 ```
 
+For a WebSocket endpoint, check the gateway handshake from the SSH server
+(replace `/events` with the service's WebSocket path):
+
+```bash
+curl --http1.1 --include --no-buffer --max-time 5 \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  'http://127.0.0.1:5443/events'
+```
+
+The WebSocket URL is `ws://127.0.0.1:5443/events`. Expect `101 Switching Protocols`
+and `Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=`. Curl may time out after
+five seconds because the upgraded connection stays open; this checks the handshake,
+not WebSocket frame exchange. Add any authentication required by the service.
+
 A `502` response means the daemon could not complete the upstream request;
 check its logs for DNS, TCP, or TLS errors.
 
@@ -150,6 +166,19 @@ curl 实际连接的位置，不改变请求 URL。默认 TCP 模式下，目标
 
 ```bash
 curl -v 'http://127.0.0.1:5443/v1/models'
+```
+
+WebSocket endpoint 应从 SSH 服务器使用上述命令检查；将 `/events` 替换为实际路径，
+并补充服务需要的认证。客户端 URL 为 `ws://127.0.0.1:5443/events`，成功握手返回
+`101` 和上述 `Sec-WebSocket-Accept`。升级后连接保持打开，curl 五秒后超时属于预期；
+此命令仅验证握手，不验证 WebSocket 帧收发。
+
+```bash
+curl --http1.1 --include --no-buffer --max-time 5 \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  'http://127.0.0.1:5443/events'
 ```
 
 `502` 表示 daemon 无法完成上游请求，应查看日志中的 DNS、TCP 或 TLS 错误。

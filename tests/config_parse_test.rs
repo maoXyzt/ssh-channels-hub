@@ -602,3 +602,22 @@ mode = "http-gateway"
   );
   assert!(config.build_channels().is_ok());
 }
+
+#[test]
+fn http_gateway_accepts_bare_port_as_loopback_tls() {
+  let config = parse(
+    r#"
+[[channels]]
+name = "loopback-tls"
+hostname = "myserver"
+direction = "remote->local"
+remote = "5443"
+local = "8443"
+mode = "http-gateway"
+"#,
+  );
+  assert_eq!(config.channels[0].local.host, "127.0.0.1");
+  assert_eq!(config.channels[0].local.port, 8443);
+  assert!(config.channels[0].local.scheme.is_none());
+  assert!(config.build_channels().is_ok());
+}

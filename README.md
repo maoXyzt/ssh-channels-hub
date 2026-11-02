@@ -141,7 +141,8 @@ For `remote->local`, this machine resolves and dials the `local` hostname for ev
 | Forward TCP traffic and let the client handle TLS, including HTTPS/WSS, mTLS, or HTTP/2 | Default `tcp`; omit `mode` |
 | Let the daemon handle TLS and upstream Host/SNI for one fixed HTTPS/WSS service | `http-gateway`; clients use HTTP/WS |
 
-Both modes support HTTPS and WSS. An `https://` endpoint alone does not enable
+TCP mode carries HTTPS/WSS end to end; gateway mode accepts HTTP/WS and uses
+HTTPS/WSS to the upstream. An `https://` endpoint alone does not enable
 gateway mode; in TCP mode it only supplies the target host and port.
 
 For gateway mode, add a reverse channel:

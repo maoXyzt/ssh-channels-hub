@@ -7,7 +7,7 @@ use hyper::header::{
 };
 use hyper::http::uri::{Authority, PathAndQuery, Scheme};
 use hyper::service::service_fn;
-use hyper::{Method, Request, Response, StatusCode, Uri};
+use hyper::{Method, Request, Response, StatusCode, Uri, Version};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -119,7 +119,9 @@ impl HttpGateway {
     mut request: Request<Incoming>,
     channel_name: &str,
   ) -> Result<Response<GatewayBody>, Infallible> {
-    let is_websocket = has_header_token(request.headers(), CONNECTION, "upgrade")
+    // Hyper provides the downstream upgrade handoff only for HTTP/1.1.
+    let is_websocket = request.version() == Version::HTTP_11
+      && has_header_token(request.headers(), CONNECTION, "upgrade")
       && has_header_token(request.headers(), UPGRADE, "websocket");
     if request.method() == Method::CONNECT
       || (request.headers().contains_key(UPGRADE) && !is_websocket)
@@ -310,6 +312,9 @@ mod tests {
   use tokio::net::TcpListener;
   use tokio::sync::{mpsc, oneshot};
   use tokio::task::JoinHandle;
+
+  trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
+  impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 
   type TestClient = hyper::client::conn::http1::SendRequest<Full<Bytes>>;
 
@@ -527,22 +532,74 @@ mod tests {
       "Upgrade:   WeBsOcKeT  ",
       "Upgrade: h2c\r\nUpgrade: WebSocket",
     ] {
-      check_websocket_relay(upgrade).await;
+      check_websocket_relay(upgrade, false).await;
     }
   }
 
-  async fn check_websocket_relay(upgrade: &str) {
+  #[tokio::test]
+  async fn websocket_upgrade_over_tls_checks_host_and_sni() {
+    check_websocket_relay("Upgrade: websocket", true).await;
+  }
+
+  #[tokio::test]
+  async fn rejects_http10_upgrade_before_contacting_upstream() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+      let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+      let gateway =
+        HttpGateway::new_http_for_test("127.0.0.1", listener.local_addr().unwrap().port());
+      let (mut client, server) = tokio::io::duplex(4096);
+      let task = tokio::spawn(async move {
+        gateway
+          .serve_connection(server, "http10".into())
+          .await
+          .unwrap()
+      });
+      client
+        .write_all(b"GET / HTTP/1.0\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+        .await
+        .unwrap();
+      let mut response = Vec::new();
+      client.read_to_end(&mut response).await.unwrap();
+      assert!(
+        String::from_utf8(response)
+          .unwrap()
+          .starts_with("HTTP/1.0 400")
+      );
+      task.await.unwrap();
+      assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+          .await
+          .is_err()
+      );
+    })
+    .await
+    .unwrap();
+  }
+
+  async fn check_websocket_relay(upgrade: &str, use_tls: bool) {
     tokio::time::timeout(Duration::from_secs(5), async {
       let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
       let port = listener.local_addr().unwrap().port();
+      let certificate = tokio_rustls::rustls::pki_types::CertificateDer::from(include_bytes!("../tests/fixtures/tls/localhost.der").to_vec());
+      let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+      roots.add(certificate.clone()).unwrap();
+      let tls_config = tokio_rustls::rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate], tokio_rustls::rustls::pki_types::PrivatePkcs8KeyDer::from(include_bytes!("../tests/fixtures/tls/localhost-key.der").to_vec()).into()).unwrap();
       let upstream_task = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut stream: Box<dyn AsyncReadWrite> = if use_tls {
+          let stream = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(tls_config)).accept(stream).await.unwrap();
+          assert_eq!(stream.get_ref().1.server_name(), Some("localhost"));
+          Box::new(stream)
+        } else { Box::new(stream) };
         let mut request = Vec::new();
         while !request.ends_with(b"\r\n\r\n") {
           request.push(stream.read_u8().await.unwrap());
         }
         let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
         assert!(request.starts_with("get /events?token=1 http/1.1"));
+        if use_tls { assert!(request.contains(&format!("host: localhost:{port}\r\n"))); }
         assert!(request.contains("upgrade: websocket"));
         assert!(request.contains(&"sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==".to_ascii_lowercase()));
         assert!(!request.contains("x-remove-me:"));
@@ -552,7 +609,11 @@ mod tests {
         stream.read_exact(&mut frame).await.unwrap();
         assert_eq!(&frame, b"\x81\x82\x01\x02\x03\x04ik");
       });
-      let gateway = HttpGateway::new_http_for_test("127.0.0.1", port);
+      let gateway = if use_tls {
+        let config = tokio_rustls::rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+        let connector = HttpsConnectorBuilder::new().with_tls_config(config).https_only().enable_http1().build();
+        HttpGateway::with_connector("localhost", port, Scheme::HTTPS, connector).unwrap()
+      } else { HttpGateway::new_http_for_test("127.0.0.1", port) };
       let (mut client, server) = tokio::io::duplex(4096);
       let gateway_task = tokio::spawn(async move {
         gateway.serve_connection(server, "websocket-test".into()).await.unwrap();

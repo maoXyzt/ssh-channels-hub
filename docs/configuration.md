@@ -120,14 +120,16 @@ upstream TLS and Host/SNI.
 
 **Upstream address.** In gateway mode, `local = "https://api.internal.example"`
 and `local = "api.internal.example:443"` both select TLS and support HTTPS/WSS
-on the same upstream. Explicit `http://` endpoints are rejected.
+on the same upstream. A bare port such as `local = "8443"` means TLS to
+`127.0.0.1:8443`; the upstream certificate must be trusted and valid for that IP.
+Explicit `http://` endpoints are rejected.
 URL paths, queries and fragments in `local` are ignored; each client's request
 path and query are forwarded without adding a prefix.
 
 **Request and response handling.** The gateway streams bodies and preserves
 ordinary headers, including authorization headers, while removing hop-by-hop
 headers and setting the upstream Host. WebSocket upgrades switch to a
-bidirectional byte relay. CONNECT and other upgrades are rejected.
+bidirectional byte relay; upgrade requests must use HTTP/1.1. CONNECT and other upgrades are rejected.
 Upstream client-certificate configuration and HTTP/2 forwarding are not provided;
 use TCP mode when those are required.
 
@@ -641,11 +643,12 @@ daemon 不终止 TLS，也不改写 Host、SNI 或请求路径；远端客户端
 
 **上游地址。** Gateway 模式下，`local = "https://api.internal.example"` 和
 `local = "api.internal.example:443"` 都使用 TLS，并同时支持 HTTPS/WSS。
-显式的 `http://` endpoint 会被拒绝。`local` URL 中的 path、query、fragment
+纯端口 `local = "8443"` 表示通过 TLS 连接 `127.0.0.1:8443`，
+证书必须受信任且对该 IP 有效。显式的 `http://` endpoint 会被拒绝。`local` URL 中的 path、query、fragment
 被忽略；客户端请求的路径和查询参数原样转发，不添加路径前缀。
 
 **请求与响应。** Gateway 流式转发 body，保留认证等普通 header，移除 hop-by-hop
-header，并设置上游 Host。WebSocket 升级后进行双向字节转发。
+header，并设置上游 Host。WebSocket 升级仅接受 HTTP/1.1，升级后进行双向字节转发。
 不支持 CONNECT 或其他协议升级，也未提供上游客户端证书配置和 HTTP/2 转发；
 需要这些能力时使用 TCP 模式。
 

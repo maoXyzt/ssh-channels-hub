@@ -55,3 +55,6 @@ tag-message = "release {{version}}"
 
 [package.metadata.binstall]
 bin-dir = "{ bin }{ binary-ext }"
+
+[dev-dependencies]
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }

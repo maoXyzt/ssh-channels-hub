@@ -78,6 +78,22 @@ connection, or TLS error. The daemon machine must be able to resolve and reach
 the gateway and trust its certificate. Use `http://127.0.0.1:<port>/...` on the
 remote client, not an HTTPS loopback URL.
 
+For a WebSocket endpoint, check the gateway handshake from the SSH server
+(replace `/events` with the service's WebSocket path):
+
+```bash
+curl --http1.1 --include --no-buffer --max-time 5 \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  'http://127.0.0.1:5443/events'
+```
+
+The WebSocket URL is `ws://127.0.0.1:5443/events`. Expect `101 Switching Protocols`
+and `Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=`. Curl may time out after
+five seconds because the upgraded connection stays open; this checks the handshake,
+not WebSocket frame exchange. Add any authentication required by the service.
+
 ### Debug logs
 
 `ssh-channels-hub start --debug` logs each channel's SSH handshake, channel
@@ -154,6 +170,19 @@ curl --connect-to 'api.internal.example:443:127.0.0.1:18443' \
 `start --debug` 查看日志中的 DNS、连接或 TLS 错误。daemon 所在机器必须能够解析
 并访问 gateway，且信任其证书。远端客户端应使用 `http://127.0.0.1:<port>/...`，
 而不是 HTTPS loopback URL。
+
+WebSocket endpoint 应从 SSH 服务器使用上述命令检查；将 `/events` 替换为实际路径，
+并补充服务需要的认证。客户端 URL 为 `ws://127.0.0.1:5443/events`，成功握手返回
+`101` 和上述 `Sec-WebSocket-Accept`。升级后连接保持打开，curl 五秒后超时属于预期；
+此命令仅验证握手，不验证 WebSocket 帧收发。
+
+```bash
+curl --http1.1 --include --no-buffer --max-time 5 \
+  -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+  -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+  'http://127.0.0.1:5443/events'
+```
 
 ### 调试日志
 

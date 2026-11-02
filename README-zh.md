@@ -139,7 +139,7 @@ Endpoint 接受以下写法：
 | 转发 TCP，由客户端处理 TLS，包括 HTTPS/WSS、mTLS 或 HTTP/2 | 默认 `tcp`，省略 `mode` |
 | 由 daemon 为固定 HTTPS/WSS 服务处理 TLS 和上游 Host/SNI | `http-gateway`，客户端使用 HTTP/WS |
 
-两种模式都支持 HTTPS 和 WSS。仅写 `https://` endpoint 不会启用 gateway；
+TCP 模式端到端承载 HTTPS/WSS；gateway 模式接收 HTTP/WS，并使用 HTTPS/WSS 连接上游。仅写 `https://` endpoint 不会启用 gateway；
 在 TCP 模式下，它只提供目标域名和端口。
 
 使用 gateway 时，添加以下反向 channel：

@@ -111,7 +111,7 @@ Request tcpip-forward on the server
 
 In `http-gateway` mode, the callback instead passes the SSH stream to the HTTP
 gateway module, which makes streaming HTTP/1.1 requests to the fixed HTTPS
-upstream.
+upstream and relays WebSocket bytes bidirectionally after a successful upgrade.
 
 Remote forwards with conflicting nonzero bind ports are separated into
 different sessions so callbacks can be routed unambiguously.
@@ -261,7 +261,7 @@ SshManager::start
 ```
 
 `http-gateway` 模式下，回调会把 SSH stream 交给 HTTP gateway 模块，由其向固定
-HTTPS 上游发起流式 HTTP/1.1 请求。
+HTTPS 上游发起流式 HTTP/1.1 请求，并在成功升级后双向转发 WebSocket 字节。
 
 使用相同非零远端端口的冲突转发会拆到不同 session，避免回调路由歧义。
 

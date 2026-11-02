@@ -94,8 +94,8 @@ sessions.
 Accepts HTTP/1.1 on a forwarded SSH stream and proxies requests to one fixed
 HTTPS gateway. It owns upstream DNS, TLS verification, SNI and Host selection,
 hop-by-hop header removal, connection pooling, and streaming request/response
-bodies. Its interface is one connection handler; SSH transport remains in
-`ssh.rs`.
+bodies, plus bidirectional WebSocket byte relaying after an HTTP/1.1 upgrade.
+Its interface is one connection handler; SSH transport remains in `ssh.rs`.
 
 #### `web.rs`
 
@@ -237,7 +237,8 @@ src/
 
 在转发后的 SSH stream 上接收 HTTP/1.1，并向固定 HTTPS gateway 代理请求。
 模块内部负责上游 DNS、TLS 校验、SNI/Host、逐跳 header 清理、连接池和流式
-请求/响应 body；接口只有一个连接处理函数，SSH 传输仍由 `ssh.rs` 负责。
+请求/响应 body，以及 HTTP/1.1 升级后的 WebSocket 双向字节转发；
+接口只有一个连接处理函数，SSH 传输仍由 `ssh.rs` 负责。
 
 #### `web.rs`
 
