@@ -132,6 +132,26 @@ After startup:
 `ssh-channels-hub test` checks local listeners only. Test `remote->local`
 channels from the server side.
 
+#### HTTP-to-HTTPS gateway
+
+To expose a fixed internal HTTPS gateway without configuring DNS or certificates
+on the server, use `http-gateway` mode:
+
+```toml
+[[channels]]
+name      = "llm-gateway"
+hostname  = "remote-server"
+direction = "remote->local"
+remote    = "5443"
+local     = "https://gateway.internal.example"
+mode      = "http-gateway"
+```
+
+On the server, call `http://127.0.0.1:5443/v1`. The daemon validates the
+upstream certificate and supplies its Host and SNI; streaming responses remain
+streaming. The HTTP listener must stay on loopback, and the server must use
+`GatewayPorts no` or `clientspecified` so it is not exposed on other interfaces.
+
 ---
 
 ### 3. Common scenarios
@@ -515,6 +535,25 @@ local     = "80"                # 收到连接桥接到本机 127.0.0.1:80
    `GatewayPorts yes` 或 `clientspecified`，并放行服务器防火墙。
 
 **注意**:`ssh-channels-hub test` 仅测本地监听端口，不验证远程转发，需在服务器侧实际连接验证。
+
+#### HTTP 转 HTTPS gateway
+
+如果要在服务器上使用固定的内网 HTTPS gateway，同时不配置 DNS 或证书，可使用
+`http-gateway` 模式：
+
+```toml
+[[channels]]
+name      = "llm-gateway"
+hostname  = "remote-server"
+direction = "remote->local"
+remote    = "5443"
+local     = "https://gateway.internal.example"
+mode      = "http-gateway"
+```
+
+在服务器上请求 `http://127.0.0.1:5443/v1`。daemon 校验上游证书并提供正确的
+Host 和 SNI，流式响应不会被缓冲。HTTP 监听必须保持 loopback，服务器必须使用
+`GatewayPorts no` 或 `clientspecified`，避免端口暴露到其他网卡。
 
 ---
 

@@ -115,6 +115,7 @@ hostname  = "ssh-config-alias"                  # required; resolves via ~/.ssh/
 direction = "local->remote" | "remote->local"   # required
 local     = "port" | "host:port" | "URL"        # required, this machine's side
 remote    = "port" | "host:port" | "URL"        # required, the SSH server's side
+mode      = "tcp" | "http-gateway"              # optional, default: tcp
 ```
 
 `local` and `remote` always name the address on their respective side regardless of direction. Direction decides who listens:
@@ -131,7 +132,21 @@ Endpoints accept:
 - `"[::1]:3306"` → IPv6
 - `"https://api.internal/v1"` → `api.internal:443` (HTTP defaults to 80)
 
-For `remote->local`, this machine resolves and dials the `local` hostname for every incoming connection. URL paths are not part of the TCP target. HTTPS remains end-to-end: the daemon does not terminate TLS or rewrite Host, SNI, or request paths.
+For `remote->local`, this machine resolves and dials the `local` hostname for every incoming connection. URL paths are not part of the TCP target. In the default `tcp` mode, HTTPS remains end-to-end: the daemon does not terminate TLS or rewrite Host, SNI, or request paths.
+
+For a fixed HTTPS gateway, `http-gateway` instead accepts HTTP/1.1 from the remote client and makes the upstream HTTPS request with the correct Host and SNI. The remote listener must be loopback, so the plaintext HTTP leg exists only inside the SSH tunnel:
+
+```toml
+[[channels]]
+name      = "llm-gateway"
+hostname  = "edge-server"
+direction = "remote->local"
+remote    = "5443"
+local     = "https://gateway.internal.example"
+mode      = "http-gateway"
+```
+
+The remote client then uses `http://127.0.0.1:5443/v1`, without an `/etc/hosts` entry or a certificate for `127.0.0.1`. Request paths, authorization headers, bodies, and streaming responses are preserved; this mode does not support CONNECT or protocol upgrades. The server's `sshd_config` must use `GatewayPorts no` or `clientspecified`: `GatewayPorts yes` ignores the requested loopback address and can expose the plaintext listener on all interfaces.
 
 ### Web status page
 

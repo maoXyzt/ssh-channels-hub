@@ -277,6 +277,7 @@ pub fn resolved_channel_line(
       remote_bind_port,
       local_connect_host,
       local_connect_port,
+      ..
     } => format!(
       "{} {}:{} {} {}:{}",
       direction_short(Direction::RemoteToLocal),

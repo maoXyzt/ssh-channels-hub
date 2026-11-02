@@ -113,6 +113,7 @@ hostname  = "ssh-config-alias"                  # 必填，来自 ~/.ssh/config 
 direction = "local->remote" | "remote->local"   # 必填
 local     = "port" | "host:port" | "URL"        # 必填，本机这一侧的地址
 remote    = "port" | "host:port" | "URL"        # 必填，远端这一侧的地址
+mode      = "tcp" | "http-gateway"              # 可选，默认 tcp
 ```
 
 `local` 和 `remote` 始终代表对应一侧的地址，与 `direction` 无关。`direction` 决定**谁监听**：
@@ -129,7 +130,21 @@ Endpoint 接受以下写法：
 - `"[::1]:3306"` → IPv6
 - `"https://api.internal/v1"` → `api.internal:443`（HTTP 默认端口为 80）
 
-对于 `remote->local`，本机会在每次收到远端连接时解析并连接 `local` 域名。URL 路径不属于 TCP 连接目标。HTTPS 保持端到端传输：daemon 不终止 TLS，也不改写 Host、SNI 或请求路径。
+对于 `remote->local`，本机会在每次收到远端连接时解析并连接 `local` 域名。URL 路径不属于 TCP 连接目标。默认 `tcp` 模式下，HTTPS 保持端到端传输：daemon 不终止 TLS，也不改写 Host、SNI 或请求路径。
+
+对于固定的 HTTPS gateway，可以使用 `http-gateway` 模式：远端客户端发送 HTTP/1.1，daemon 使用正确的 Host 和 SNI 向上游发起 HTTPS 请求。远端监听必须是 loopback，使明文 HTTP 仅存在于 SSH 隧道内：
+
+```toml
+[[channels]]
+name      = "llm-gateway"
+hostname  = "edge-server"
+direction = "remote->local"
+remote    = "5443"
+local     = "https://gateway.internal.example"
+mode      = "http-gateway"
+```
+
+远端客户端直接使用 `http://127.0.0.1:5443/v1`，无需配置 `/etc/hosts` 或 `127.0.0.1` 证书。请求路径、认证 header、body 和流式响应都会保留；不支持 CONNECT 或协议升级。服务器的 `sshd_config` 必须使用 `GatewayPorts no` 或 `clientspecified`：`GatewayPorts yes` 会忽略请求的 loopback 地址，可能把明文监听暴露到所有网卡。
 
 ### Web 状态页
 

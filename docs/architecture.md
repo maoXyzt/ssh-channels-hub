@@ -87,7 +87,9 @@ Load config.toml
 - `remote->local`: the client registers `tcpip-forward`; each
   `forwarded-tcpip` callback connects to the configured local endpoint.
 
-Both directions copy data asynchronously in both directions.
+Both directions copy data asynchronously in both directions in the default TCP
+mode. A reverse forward in `http-gateway` mode instead passes the SSH stream to
+`http_gateway.rs`, which proxies HTTP/1.1 requests to one fixed HTTPS upstream.
 
 ### 5. Concurrency and state
 
@@ -223,7 +225,9 @@ channels 才能共享 session；使用相同非零远端端口的远程转发会
 - `remote->local`：客户端注册 `tcpip-forward`，每个 `forwarded-tcpip` 回调连接
   配置的本地 endpoint。
 
-两种方向都以异步方式双向复制数据。
+默认 TCP 模式下，两种方向都以异步方式双向复制数据。`http-gateway` 模式的
+反向转发会把 SSH stream 交给 `http_gateway.rs`，由其向固定 HTTPS 上游代理
+HTTP/1.1 请求。
 
 ### 5. 并发与状态
 

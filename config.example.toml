@@ -68,3 +68,15 @@ remote    = "127.0.0.1:80"
 # direction = "remote->local"
 # remote    = "18443"
 # local     = "https://api.internal.example/v1"  # URL path is not part of the TCP target
+
+# Optional: expose an HTTPS gateway as loopback HTTP on the SSH server.
+# The client uses http://127.0.0.1:5443/v1; no remote /etc/hosts entry is needed.
+# This mode requires remote->local, an HTTPS local URL, and a loopback remote bind.
+# sshd_config must use GatewayPorts no or clientspecified, not GatewayPorts yes.
+# [[channels]]
+# name      = "llm-gateway"
+# hostname  = "example-server"
+# direction = "remote->local"
+# remote    = "5443"
+# local     = "https://gateway.internal.example"
+# mode      = "http-gateway"

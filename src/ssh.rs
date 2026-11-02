@@ -1,7 +1,9 @@
 use crate::config::{
-  AuthConfig, ChannelConfig, ChannelTypeParams, Direction, JumpHopConfig, ReconnectionConfig,
+  AuthConfig, ChannelConfig, ChannelMode, ChannelTypeParams, Direction, JumpHopConfig,
+  ReconnectionConfig,
 };
 use crate::error::{AppError, Result};
+use crate::http_gateway::HttpGateway;
 use crate::service::{ChannelHealth, ChannelStatus};
 use crate::ssh_config;
 use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder, Retryable};
@@ -184,22 +186,72 @@ struct ClientHandler {
 }
 
 #[derive(Clone)]
+enum ReverseTarget {
+  Tcp { local_host: String, local_port: u16 },
+  HttpGateway(Box<HttpGateway>),
+}
+
+#[derive(Clone)]
 struct ReverseDestination {
   channel_name: String,
-  local_host: String,
-  local_port: u16,
+  target: ReverseTarget,
 }
 
 impl ReverseDestination {
   async fn connect(&self) -> std::io::Result<TcpStream> {
-    TcpStream::connect((self.local_host.as_str(), self.local_port)).await
+    match &self.target {
+      ReverseTarget::Tcp {
+        local_host,
+        local_port,
+      } => TcpStream::connect((local_host.as_str(), *local_port)).await,
+      ReverseTarget::HttpGateway(_) => Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "HTTP gateway does not use a raw TCP destination",
+      )),
+    }
+  }
+
+  async fn relay(self, channel: russh::Channel<russh::client::Msg>) {
+    match self.target.clone() {
+      ReverseTarget::Tcp { .. } => match self.connect().await {
+        Ok(mut stream) => {
+          let mut channel_stream = channel.into_stream();
+          if let Err(error) = tokio::io::copy_bidirectional(&mut stream, &mut channel_stream).await
+          {
+            debug!(channel = %self.channel_name, error = ?error, "Forwarded-tcpip relay ended");
+          }
+        }
+        Err(error) => {
+          error!(
+            channel = %self.channel_name,
+            local = %self.local_addr(),
+            error = ?error,
+            "Failed to connect to local address for forwarded-tcpip"
+          );
+        }
+      },
+      ReverseTarget::HttpGateway(gateway) => {
+        if let Err(error) = gateway
+          .serve_connection(channel.into_stream(), self.channel_name.clone())
+          .await
+        {
+          debug!(channel = %self.channel_name, error = ?error, "HTTP gateway connection ended");
+        }
+      }
+    }
   }
 
   fn local_addr(&self) -> String {
-    if self.local_host.contains(':') {
-      format!("[{}]:{}", self.local_host, self.local_port)
-    } else {
-      format!("{}:{}", self.local_host, self.local_port)
+    match &self.target {
+      ReverseTarget::Tcp {
+        local_host,
+        local_port,
+      } if local_host.contains(':') => format!("[{}]:{}", local_host, local_port),
+      ReverseTarget::Tcp {
+        local_host,
+        local_port,
+      } => format!("{}:{}", local_host, local_port),
+      ReverseTarget::HttpGateway(_) => "HTTP gateway".to_string(),
     }
   }
 }
@@ -317,25 +369,7 @@ impl client::Handler for ClientHandler {
       return Ok(());
     };
 
-    match destination.connect().await {
-      Ok(mut stream) => {
-        let mut channel_stream = channel.into_stream();
-        let channel_name = destination.channel_name;
-        tokio::spawn(async move {
-          if let Err(e) = tokio::io::copy_bidirectional(&mut stream, &mut channel_stream).await {
-            debug!(channel = %channel_name, error = ?e, "Forwarded-tcpip relay ended");
-          }
-        });
-      }
-      Err(e) => {
-        error!(
-            channel = %destination.channel_name,
-            local = %destination.local_addr(),
-            error = ?e,
-            "Failed to connect to local address for forwarded-tcpip"
-        );
-      }
-    }
+    tokio::spawn(destination.relay(channel));
     Ok(())
   }
 }
@@ -816,6 +850,7 @@ fn channel_status(config: &ChannelConfig, health: &Arc<StdMutex<ChannelHealth>>)
       remote_bind_port,
       local_connect_host,
       local_connect_port,
+      ..
     } => (
       Direction::RemoteToLocal,
       format!("{}:{}", local_connect_host, local_connect_port),
@@ -879,11 +914,22 @@ async fn register_forwarded_tcpip(
     remote_bind_port,
     local_connect_host,
     local_connect_port,
+    mode,
   } = &config.params
   else {
     return Err(AppError::SshChannel(
       "register_forwarded_tcpip expects ForwardedTcpIp params".to_string(),
     ));
+  };
+
+  let target = match mode {
+    ChannelMode::Tcp => ReverseTarget::Tcp {
+      local_host: local_connect_host.clone(),
+      local_port: *local_connect_port,
+    },
+    ChannelMode::HttpGateway => ReverseTarget::HttpGateway(Box::new(
+      HttpGateway::new(local_connect_host, *local_connect_port).map_err(AppError::SshChannel)?,
+    )),
   };
 
   info!(
@@ -905,8 +951,7 @@ async fn register_forwarded_tcpip(
   };
   let destination = ReverseDestination {
     channel_name: config.name.clone(),
-    local_host: local_connect_host.clone(),
-    local_port: *local_connect_port,
+    target,
   };
   match reverse_routes.write() {
     Ok(mut routes) => {
@@ -1446,8 +1491,10 @@ mod tests {
 
     let destination = ReverseDestination {
       channel_name: "internal-api".into(),
-      local_host: "localhost".into(),
-      local_port,
+      target: ReverseTarget::Tcp {
+        local_host: "localhost".into(),
+        local_port,
+      },
     };
     let mut stream = destination.connect().await.unwrap();
     stream.write_all(b"ping").await.unwrap();
@@ -1461,8 +1508,10 @@ mod tests {
   fn reverse_destination_brackets_ipv6_local_address() {
     let destination = ReverseDestination {
       channel_name: "internal-api".into(),
-      local_host: "::1".into(),
-      local_port: 443,
+      target: ReverseTarget::Tcp {
+        local_host: "::1".into(),
+        local_port: 443,
+      },
     };
 
     assert_eq!(destination.local_addr(), "[::1]:443");

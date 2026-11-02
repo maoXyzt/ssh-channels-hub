@@ -73,6 +73,7 @@ strict = false
 | `direction` | string | yes | `"local->remote"` (`ssh -L`) or `"remote->local"` (`ssh -R`) |
 | `local` | string | yes | Endpoint on this machine |
 | `remote` | string | yes | Endpoint on the SSH-server side |
+| `mode` | string | no | `"tcp"` (default) or `"http-gateway"` |
 
 The meanings are fixed: `local` always means this machine and `remote` always
 means the SSH-server side. `direction` determines which endpoint listens:
@@ -97,10 +98,36 @@ Both endpoints accept these forms:
 HTTP and HTTPS URLs default to ports 80 and 443 respectively. The path, query,
 and fragment are not part of the TCP target. For `remote->local`, the daemon
 resolves and dials the `local` hostname on this machine for every incoming
-connection; it does not cache a configured IP address. TLS is passed through
-end-to-end without terminating it or rewriting Host, SNI, or request paths.
-The remote client remains responsible for its URL, DNS/hostname mapping, and
-certificate verification.
+connection; it does not cache a configured IP address. In the default `tcp`
+mode, TLS is passed through end-to-end without terminating it or rewriting Host,
+SNI, or request paths. The remote client remains responsible for its URL,
+DNS/hostname mapping, and certificate verification.
+
+For a fixed HTTPS gateway, `mode = "http-gateway"` accepts HTTP/1.1 from the
+remote client and makes upstream HTTPS requests with the gateway's Host and SNI:
+
+```toml
+[[channels]]
+name      = "llm-gateway"
+hostname  = "edge-server"
+direction = "remote->local"
+remote    = "5443"
+local     = "https://gateway.internal.example"
+mode      = "http-gateway"
+```
+
+The remote client uses `http://127.0.0.1:5443/v1`; no remote `/etc/hosts` entry
+or loopback IP certificate is needed. SSH protects the HTTP leg, and the daemon
+validates the upstream HTTPS certificate using native roots. Request paths,
+authorization headers, bodies, and streaming responses are preserved. The URL
+path in `local` is ignored, as in TCP mode. This mode requires `remote->local`,
+an HTTPS `local` URL, and a loopback `remote` listener. CONNECT and protocol
+upgrades are not supported.
+
+The loopback check applies only to the requested bind address. If `sshd_config`
+sets `GatewayPorts yes`, the server ignores that address and binds all
+interfaces, exposing the plaintext HTTP listener. Use `GatewayPorts no` or
+`clientspecified` for gateway channels.
 
 Unknown fields are rejected instead of silently ignored.
 
@@ -558,6 +585,7 @@ strict = false
 | `direction` | string | ✅ | `"local->remote"`(ssh -L) 或 `"remote->local"`(ssh -R) |
 | `local` | string | ✅ | 本机这一侧的地址，见下文「Endpoint 格式」 |
 | `remote` | string | ✅ | 远端这一侧的地址 |
+| `mode` | string | 可选 | `"tcp"`（默认）或 `"http-gateway"` |
 
 **字段语义恒定**:`local` 永远表示本机这一侧、`remote` 永远表示 SSH 服务器这一侧 —— 与 `direction` 无关。变动的只是「谁监听 / 谁连接」:
 
@@ -578,8 +606,32 @@ strict = false
 
 HTTP / HTTPS URL 未指定端口时分别使用 80 / 443。URL 的 path、query 和 fragment
 不属于 TCP 连接目标。对于 `remote->local`，daemon 会在本机为每个远端新连接解析并
-拨号 `local` 域名，不会缓存一个固定目标 IP。TLS 端到端透传，daemon 不终止 TLS，
-也不改写 Host、SNI 或请求路径；远端客户端仍需自行处理 URL、域名映射和证书校验。
+拨号 `local` 域名，不会缓存一个固定目标 IP。默认 `tcp` 模式下，TLS 端到端透传，
+daemon 不终止 TLS，也不改写 Host、SNI 或请求路径；远端客户端仍需自行处理 URL、
+域名映射和证书校验。
+
+对于固定的 HTTPS gateway，可以设置 `mode = "http-gateway"`：远端客户端发送
+HTTP/1.1，daemon 使用 gateway 的 Host 和 SNI 向上游发起 HTTPS 请求：
+
+```toml
+[[channels]]
+name      = "llm-gateway"
+hostname  = "edge-server"
+direction = "remote->local"
+remote    = "5443"
+local     = "https://gateway.internal.example"
+mode      = "http-gateway"
+```
+
+远端客户端使用 `http://127.0.0.1:5443/v1`，无需配置远端 `/etc/hosts` 或 loopback
+IP 证书。HTTP 段由 SSH 保护，daemon 使用系统根证书验证上游 HTTPS。请求路径、认证
+header、body 和流式响应都会保留；`local` 中的 URL path 与 TCP 模式一样会被忽略。
+此模式要求 `remote->local`、HTTPS `local` URL 和 loopback `remote` 监听，不支持
+CONNECT 或协议升级。
+
+loopback 校验只针对请求的绑定地址。如果 `sshd_config` 设置了 `GatewayPorts yes`，
+服务器会忽略该地址并监听所有网卡，从而暴露明文 HTTP 端口。gateway channel 应使用
+`GatewayPorts no` 或 `clientspecified`。
 
 未识别的字段会直接报错(`deny_unknown_fields`)，不会被静默忽略。
 

@@ -14,6 +14,7 @@ src/
 |- config.rs      TOML models and runtime channel resolution
 |- ssh_config.rs  OpenSSH config parsing and default paths
 |- host_check.rs  SSH alias support analysis
+|- http_gateway.rs HTTP/1.1 to fixed-HTTPS gateway proxy
 |- port_check.rs  listener and tunnel probes
 |- service.rs     service lifecycle and route grouping
 |- ssh.rs         SSH sessions, forwarding, verification, reconnection
@@ -88,6 +89,14 @@ tracks per-channel health, and reconnects route groups with backoff and jitter.
 and remote-forward callbacks; `JumpClientHandler` handles verified jump-host
 sessions.
 
+#### `http_gateway.rs`
+
+Accepts HTTP/1.1 on a forwarded SSH stream and proxies requests to one fixed
+HTTPS gateway. It owns upstream DNS, TLS verification, SNI and Host selection,
+hop-by-hop header removal, connection pooling, and streaming request/response
+bodies. Its interface is one connection handler; SSH transport remains in
+`ssh.rs`.
+
 #### `web.rs`
 
 Binds the loopback status server, renders service and channel state, builds
@@ -112,6 +121,7 @@ main
 |- host_check --> ssh_config
 |- port_check
 |- service --> ssh --> config
+|             `-----> http_gateway
 |- web --> service
 |- ui --> service
 `- error (shared by runtime modules)
@@ -154,6 +164,7 @@ src/
 |- config.rs      TOML 模型和运行时 channel 解析
 |- ssh_config.rs  OpenSSH config 解析和默认路径
 |- host_check.rs  SSH alias 支持状态分析
+|- http_gateway.rs HTTP/1.1 到固定 HTTPS gateway 的代理
 |- port_check.rs  监听地址和隧道探测
 |- service.rs     服务生命周期和路由分组
 |- ssh.rs         SSH session、转发、校验和重连
@@ -222,6 +233,12 @@ src/
 `SshManager` 是主要边界。`ClientHandler` 处理目标 SSH session 和远程转发回调，
 `JumpClientHandler` 处理已校验的跳板 session。
 
+#### `http_gateway.rs`
+
+在转发后的 SSH stream 上接收 HTTP/1.1，并向固定 HTTPS gateway 代理请求。
+模块内部负责上游 DNS、TLS 校验、SNI/Host、逐跳 header 清理、连接池和流式
+请求/响应 body；接口只有一个连接处理函数，SSH 传输仍由 `ssh.rs` 负责。
+
 #### `web.rs`
 
 绑定 loopback 状态服务、渲染服务和 channel 状态、生成本地 endpoint 链接、转义
@@ -245,6 +262,7 @@ main
 |- host_check --> ssh_config
 |- port_check
 |- service --> ssh --> config
+|             `-----> http_gateway
 |- web --> service
 |- ui --> service
 `- error（运行时模块共享）
