@@ -168,9 +168,9 @@ curl 实际连接的位置，不改变请求 URL。默认 TCP 模式下，目标
 curl -v 'http://127.0.0.1:5443/v1/models'
 ```
 
-WebSocket endpoint 应从 SSH 服务器使用上述命令检查；将 `/events` 替换为实际路径，
+WebSocket endpoint 应从 SSH 服务器使用下面的命令检查；将 `/events` 替换为实际路径，
 并补充服务需要的认证。客户端 URL 为 `ws://127.0.0.1:5443/events`，成功握手返回
-`101` 和上述 `Sec-WebSocket-Accept`。升级后连接保持打开，curl 五秒后超时属于预期；
+`101` 和 `Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=`。升级后连接保持打开，curl 五秒后超时属于预期；
 此命令仅验证握手，不验证 WebSocket 帧收发。
 
 ```bash

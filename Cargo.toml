@@ -19,6 +19,7 @@ include = [
   "/README.md",
   "/LICENSE",
   "/config.example.toml",
+  "/tests/fixtures/tls/*",
 ]
 
 [dependencies]
