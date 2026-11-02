@@ -132,6 +132,9 @@ After startup:
 `ssh-channels-hub test` checks local listeners only. Test `remote->local`
 channels from the server side.
 
+For mode selection and complete TCP versus gateway examples, see the
+[configuration reference](configuration.md).
+
 #### HTTP-to-HTTPS gateway
 
 To expose a fixed internal HTTPS gateway without configuring DNS or certificates
@@ -535,6 +538,8 @@ local     = "80"                # 收到连接桥接到本机 127.0.0.1:80
    `GatewayPorts yes` 或 `clientspecified`，并放行服务器防火墙。
 
 **注意**:`ssh-channels-hub test` 仅测本地监听端口，不验证远程转发，需在服务器侧实际连接验证。
+
+两种模式的选择、TCP 与 gateway 的完整例子见[配置参考](configuration.md)。
 
 #### HTTP 转 HTTPS gateway
 

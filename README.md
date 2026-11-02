@@ -150,6 +150,48 @@ In `http-gateway` mode, `local = "host:port"` also selects a TLS upstream. An `h
 
 The remote client then uses `http://127.0.0.1:5443/v1`, without an `/etc/hosts` entry or a certificate for `127.0.0.1`. Request paths, authorization headers, bodies, and streaming responses are preserved; WebSocket upgrades are supported (use `ws://127.0.0.1:5443/...` to reach the WSS upstream); CONNECT and other protocol upgrades are not supported. The server's `sshd_config` must use `GatewayPorts no` or `clientspecified`: `GatewayPorts yes` ignores the requested loopback address and can expose the plaintext listener on all interfaces.
 
+
+Choose the mode by who should handle TLS:
+
+| Need | Mode |
+| --- | --- |
+| Database/other TCP traffic, end-to-end TLS, client certificates (mTLS), or HTTP/2 passthrough | Default `tcp` (omit `mode`) |
+| A fixed HTTPS/WSS service reachable from the daemon, with remote clients using loopback HTTP/WS and the daemon supplying upstream Host/SNI | `http-gateway` |
+
+HTTPS plus WSS does not require gateway mode: both work over default TCP forwarding.
+An `https://` endpoint alone does not enable gateway mode. In TCP mode, connecting
+to `https://127.0.0.1:<port>` may fail certificate validation; the client must use
+the upstream hostname for TLS and Host.
+
+For example, keep TLS end-to-end with this reverse tunnel:
+
+```toml
+[[channels]]
+name      = "prefect-tcp"
+hostname  = "edge-server"
+direction = "remote->local"
+remote    = "5443"
+local     = "prefect.mmdl.zoedev.top:443"
+# mode = "tcp" is the default
+```
+
+On the SSH server, this command connects through the tunnel while keeping the
+upstream hostname for TLS verification and Host:
+
+```sh
+curl --connect-to prefect.mmdl.zoedev.top:443:127.0.0.1:5443 https://prefect.mmdl.zoedev.top/
+```
+
+For gateway mode, use the same configuration with `mode = "http-gateway"`.
+Then use `curl http://127.0.0.1:5443/` or a WebSocket client pointed at
+`ws://127.0.0.1:5443/<actual-websocket-path>`. Both go to the same TLS upstream;
+`local = "https://prefect.mmdl.zoedev.top/"` is equivalent to the host:port form.
+Clients must support HTTP/WS loopback URLs. The daemon verifies upstream
+certificates using native roots; this mode provides HTTP/1.1 and WebSocket
+forwarding, without upstream client-certificate configuration or response
+redirect/cookie/HTML URL rewriting. Applications that generate absolute URLs
+may need their public/base URL configured to match how clients access them.
+
 ### Web status page
 
 The Web status page is enabled by default, and its loopback URL is printed at startup. It shows channel endpoints, health, retries, latest errors, and host-key remediation commands.

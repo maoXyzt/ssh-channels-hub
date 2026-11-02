@@ -112,16 +112,15 @@ impl HttpGateway {
       .await
   }
 
+  /// Forwards HTTP bodies unchanged, switching to a byte relay only after a
+  /// supported upstream WebSocket handshake. TLS and the target stay fixed.
   async fn handle(
     &self,
     mut request: Request<Incoming>,
     channel_name: &str,
   ) -> Result<Response<GatewayBody>, Infallible> {
     let is_websocket = has_header_token(request.headers(), CONNECTION, "upgrade")
-      && request
-        .headers()
-        .get(UPGRADE)
-        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"));
+      && has_header_token(request.headers(), UPGRADE, "websocket");
     if request.method() == Method::CONNECT
       || (request.headers().contains_key(UPGRADE) && !is_websocket)
     {
@@ -172,10 +171,7 @@ impl HttpGateway {
         if response.status() == StatusCode::SWITCHING_PROTOCOLS {
           if !is_websocket
             || !has_header_token(response.headers(), CONNECTION, "upgrade")
-            || !response
-              .headers()
-              .get(UPGRADE)
-              .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"))
+            || !is_websocket_response(response.headers())
           {
             return Ok(text_response(
               StatusCode::BAD_GATEWAY,
@@ -257,6 +253,7 @@ fn text_response(status: StatusCode, message: &'static str) -> Response<GatewayB
     .expect("static HTTP gateway error response is valid")
 }
 
+/// A request may offer several upgrade protocols across comma-separated fields.
 fn has_header_token(headers: &HeaderMap, name: HeaderName, token: &str) -> bool {
   headers
     .get_all(name)
@@ -264,6 +261,17 @@ fn has_header_token(headers: &HeaderMap, name: HeaderName, token: &str) -> bool 
     .filter_map(|value| value.to_str().ok())
     .flat_map(|value| value.split(','))
     .any(|value| value.trim().eq_ignore_ascii_case(token))
+}
+
+/// A response selects the actual protocol, rather than offering alternatives.
+/// Reject extra values or repeated fields: rewriting a protocol stack to just
+/// WebSocket would misrepresent what the upstream selected.
+fn is_websocket_response(headers: &HeaderMap) -> bool {
+  let mut values = headers.get_all(UPGRADE).iter();
+  values
+    .next()
+    .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"))
+    && values.next().is_none()
 }
 
 fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
@@ -513,6 +521,17 @@ mod tests {
 
   #[tokio::test]
   async fn websocket_upgrade_relays_frames_and_buffered_bytes() {
+    for upgrade in [
+      "Upgrade: websocket",
+      "Upgrade: h2c, WebSocket",
+      "Upgrade:   WeBsOcKeT  ",
+      "Upgrade: h2c\r\nUpgrade: WebSocket",
+    ] {
+      check_websocket_relay(upgrade).await;
+    }
+  }
+
+  async fn check_websocket_relay(upgrade: &str) {
     tokio::time::timeout(Duration::from_secs(5), async {
       let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
       let port = listener.local_addr().unwrap().port();
@@ -525,35 +544,101 @@ mod tests {
         let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
         assert!(request.starts_with("get /events?token=1 http/1.1"));
         assert!(request.contains("upgrade: websocket"));
-        assert!(request.contains("sec-websocket-key: test-key"));
+        assert!(request.contains(&"sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==".to_ascii_lowercase()));
         assert!(!request.contains("x-remove-me:"));
         // Send a frame with the headers to exercise Hyper's upgrade read buffer.
-        stream.write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: test-accept\r\n\r\n\x81\x02hi").await.unwrap();
+        stream.write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n\x81\x02hi").await.unwrap();
         let mut frame = [0; 8];
         stream.read_exact(&mut frame).await.unwrap();
-        assert_eq!(&frame, b"\x81\x82\x01\x02\x03\x04ni");
+        assert_eq!(&frame, b"\x81\x82\x01\x02\x03\x04ik");
       });
       let gateway = HttpGateway::new_http_for_test("127.0.0.1", port);
       let (mut client, server) = tokio::io::duplex(4096);
       let gateway_task = tokio::spawn(async move {
         gateway.serve_connection(server, "websocket-test".into()).await.unwrap();
       });
-      client.write_all(b"GET /events?token=1 HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive, Upgrade, x-remove-me\r\nUpgrade: websocket\r\nSec-WebSocket-Key: test-key\r\nSec-WebSocket-Version: 13\r\nX-Remove-Me: secret\r\n\r\n").await.unwrap();
+      let request = format!("GET /events?token=1 HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive, Upgrade, x-remove-me\r\n{upgrade}\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nX-Remove-Me: secret\r\n\r\n");
+      client.write_all(request.as_bytes()).await.unwrap();
       let mut headers = Vec::new();
       while !headers.ends_with(b"\r\n\r\n") {
         headers.push(client.read_u8().await.unwrap());
       }
       let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
       assert!(headers.starts_with("http/1.1 101"));
-      assert!(headers.contains("sec-websocket-accept: test-accept"));
+      assert!(headers.contains(&"sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=".to_ascii_lowercase()));
       let mut frame = [0; 4];
       client.read_exact(&mut frame).await.unwrap();
       assert_eq!(&frame, b"\x81\x02hi");
-      client.write_all(b"\x81\x82\x01\x02\x03\x04ni").await.unwrap();
+      client.write_all(b"\x81\x82\x01\x02\x03\x04ik").await.unwrap();
       upstream_task.await.unwrap();
       drop(client);
       gateway_task.await.unwrap();
     }).await.expect("WebSocket relay must complete");
+  }
+
+  #[tokio::test]
+  async fn validates_upstream_upgrade_and_preserves_http_rejections() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+      for (status, headers, expected) in [
+        (
+          "101 Switching Protocols",
+          "Connection: Upgrade\r\nUpgrade: h2c, websocket\r\n",
+          StatusCode::BAD_GATEWAY,
+        ),
+        (
+          "101 Switching Protocols",
+          "Connection: Upgrade\r\nUpgrade: websocket\r\nUpgrade: h2c\r\n",
+          StatusCode::BAD_GATEWAY,
+        ),
+        (
+          "101 Switching Protocols",
+          "Connection: Upgrade\r\n",
+          StatusCode::BAD_GATEWAY,
+        ),
+        (
+          "101 Switching Protocols",
+          "Upgrade: websocket\r\n",
+          StatusCode::BAD_GATEWAY,
+        ),
+        (
+          "403 Forbidden",
+          "Content-Length: 6\r\n",
+          StatusCode::FORBIDDEN,
+        ),
+      ] {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let upstream_task = tokio::spawn(async move {
+          let (mut stream, _) = listener.accept().await.unwrap();
+          let mut request = Vec::new();
+          while !request.ends_with(b"\r\n\r\n") {
+            request.push(stream.read_u8().await.unwrap());
+          }
+          stream
+            .write_all(format!("HTTP/1.1 {status}\r\n{headers}\r\ndenied").as_bytes())
+            .await
+            .unwrap();
+        });
+        let (mut client, gateway_task, connection_task) = connect_gateway(port).await;
+        let request = Request::builder()
+          .uri("/events")
+          .header(CONNECTION, "Upgrade")
+          .header(UPGRADE, "websocket")
+          .body(Full::new(Bytes::new()))
+          .unwrap();
+        let response = client.send_request(request).await.unwrap();
+        assert_eq!(response.status(), expected);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        if expected == StatusCode::FORBIDDEN {
+          assert_eq!(&body[..], b"denied");
+        }
+        upstream_task.await.unwrap();
+        gateway_task.abort();
+        connection_task.abort();
+      }
+    })
+    .await
+    .expect("upstream response checks must complete");
   }
 
   #[test]

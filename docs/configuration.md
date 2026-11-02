@@ -130,6 +130,48 @@ sets `GatewayPorts yes`, the server ignores that address and binds all
 interfaces, exposing the plaintext HTTP listener. Use `GatewayPorts no` or
 `clientspecified` for gateway channels.
 
+
+Choose the mode by who should handle TLS:
+
+| Need | Mode |
+| --- | --- |
+| Database/other TCP traffic, end-to-end TLS, client certificates (mTLS), or HTTP/2 passthrough | Default `tcp` (omit `mode`) |
+| A fixed HTTPS/WSS service reachable from the daemon, with remote clients using loopback HTTP/WS and the daemon supplying upstream Host/SNI | `http-gateway` |
+
+HTTPS plus WSS does not require gateway mode: both work over default TCP forwarding.
+An `https://` endpoint alone does not enable gateway mode. In TCP mode, connecting
+to `https://127.0.0.1:<port>` may fail certificate validation; the client must use
+the upstream hostname for TLS and Host.
+
+For example, keep TLS end-to-end with this reverse tunnel:
+
+```toml
+[[channels]]
+name      = "prefect-tcp"
+hostname  = "edge-server"
+direction = "remote->local"
+remote    = "5443"
+local     = "prefect.mmdl.zoedev.top:443"
+# mode = "tcp" is the default
+```
+
+On the SSH server, this command connects through the tunnel while keeping the
+upstream hostname for TLS verification and Host:
+
+```sh
+curl --connect-to prefect.mmdl.zoedev.top:443:127.0.0.1:5443 https://prefect.mmdl.zoedev.top/
+```
+
+For gateway mode, use the same configuration with `mode = "http-gateway"`.
+Then use `curl http://127.0.0.1:5443/` or a WebSocket client pointed at
+`ws://127.0.0.1:5443/<actual-websocket-path>`. Both go to the same TLS upstream;
+`local = "https://prefect.mmdl.zoedev.top/"` is equivalent to the host:port form.
+Clients must support HTTP/WS loopback URLs. The daemon verifies upstream
+certificates using native roots; this mode provides HTTP/1.1 and WebSocket
+forwarding, without upstream client-certificate configuration or response
+redirect/cookie/HTML URL rewriting. Applications that generate absolute URLs
+may need their public/base URL configured to match how clients access them.
+
 Unknown fields are rejected instead of silently ignored.
 
 #### 3.3 `[auth.<alias>]`
@@ -634,6 +676,46 @@ header、body 和流式响应都会保留；`local` 中的 URL path 与 TCP 模�
 loopback 校验只针对请求的绑定地址。如果 `sshd_config` 设置了 `GatewayPorts yes`，
 服务器会忽略该地址并监听所有网卡，从而暴露明文 HTTP 端口。gateway channel 应使用
 `GatewayPorts no` 或 `clientspecified`。
+
+
+按由谁处理 TLS 来选择模式：
+
+| 需求 | 模式 |
+| --- | --- |
+| 数据库或其他 TCP 协议、端到端 TLS、客户端证书（mTLS）、HTTP/2 透传 | 默认 `tcp`，省略 `mode` 即可 |
+| daemon 能访问固定 HTTPS/WSS 服务，希望远端使用 loopback HTTP/WS，并由 daemon 设置上游 Host/SNI | `http-gateway` |
+
+同时使用 HTTPS 和 WSS 并不要求启用 gateway，默认 TCP 转发也支持两者。
+仅写 `https://` endpoint 不会自动启用 gateway。TCP 模式下直接访问
+`https://127.0.0.1:<port>` 可能无法通过证书校验，客户端仍需使用上游域名作为 TLS
+和 Host 的目标。
+
+例如，以下反向隧道保留端到端 TLS：
+
+```toml
+[[channels]]
+name      = "prefect-tcp"
+hostname  = "edge-server"
+direction = "remote->local"
+remote    = "5443"
+local     = "prefect.mmdl.zoedev.top:443"
+# 默认 mode = "tcp"，可省略
+```
+
+在 SSH 服务器上执行以下命令，通过隧道连接，同时保留正确的 TLS 校验域名和 Host：
+
+```sh
+curl --connect-to prefect.mmdl.zoedev.top:443:127.0.0.1:5443 https://prefect.mmdl.zoedev.top/
+```
+
+需要 gateway 时，在同一配置中增加 `mode = "http-gateway"`，然后使用
+`curl http://127.0.0.1:5443/`；WebSocket 客户端使用
+`ws://127.0.0.1:5443/<实际的WebSocket路径>`。两者连接同一个 TLS 上游；
+`local = "https://prefect.mmdl.zoedev.top/"` 与上述 host:port 写法等效。
+客户端必须支持 HTTP/WS loopback URL。daemon 使用系统根证书验证上游证书，
+此模式提供 HTTP/1.1 和 WebSocket 转发，未提供上游客户端证书配置，也不改写响应中的
+重定向、Cookie 或 HTML URL。若应用生成绝对 URL，可能还需要配置应用的 public/base URL，
+使其与客户端的访问地址一致。
 
 未识别的字段会直接报错(`deny_unknown_fields`)，不会被静默忽略。
 
