@@ -559,7 +559,6 @@ fn http_gateway_rejects_unsafe_or_ambiguous_configuration() {
       "direction",
     ),
     ("remote->local", "5443", "http://gateway.internal", "HTTPS"),
-    ("remote->local", "5443", "gateway.internal:443", "HTTPS"),
     (
       "remote->local",
       "0.0.0.0:5443",
@@ -586,4 +585,20 @@ mode = "http-gateway"
       "expected '{expected_error}' in: {error}"
     );
   }
+}
+
+#[test]
+fn http_gateway_accepts_tls_host_and_port() {
+  let config = parse(
+    r#"
+[[channels]]
+name = "prefect"
+hostname = "myserver"
+direction = "remote->local"
+remote = "5443"
+local = "prefect.mmdl.zoedev.top:443"
+mode = "http-gateway"
+"#,
+  );
+  assert!(config.build_channels().is_ok());
 }

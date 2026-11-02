@@ -108,6 +108,7 @@ impl HttpGateway {
           async move { gateway.handle(request, &channel_name).await }
         }),
       )
+      .with_upgrades()
       .await
   }
 
@@ -116,10 +117,17 @@ impl HttpGateway {
     mut request: Request<Incoming>,
     channel_name: &str,
   ) -> Result<Response<GatewayBody>, Infallible> {
-    if request.method() == Method::CONNECT || request.headers().contains_key(UPGRADE) {
+    let is_websocket = has_header_token(request.headers(), CONNECTION, "upgrade")
+      && request
+        .headers()
+        .get(UPGRADE)
+        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"));
+    if request.method() == Method::CONNECT
+      || (request.headers().contains_key(UPGRADE) && !is_websocket)
+    {
       return Ok(text_response(
         StatusCode::BAD_REQUEST,
-        "HTTP gateway only supports ordinary HTTP/1.1 requests\n",
+        "HTTP gateway supports HTTP/1.1 and WebSocket requests\n",
       ));
     }
 
@@ -144,14 +152,64 @@ impl HttpGateway {
       }
     };
 
+    let downstream_upgrade = is_websocket.then(|| hyper::upgrade::on(&mut request));
     *request.uri_mut() = uri;
     strip_hop_by_hop_headers(request.headers_mut());
+    if is_websocket {
+      request
+        .headers_mut()
+        .insert(CONNECTION, HeaderValue::from_static("upgrade"));
+      request
+        .headers_mut()
+        .insert(UPGRADE, HeaderValue::from_static("websocket"));
+    }
     request.headers_mut().insert(HOST, self.host_header.clone());
     let (parts, body) = request.into_parts();
     let request = Request::from_parts(parts, incoming_body(body));
 
     match tokio::time::timeout(UPSTREAM_HEADER_TIMEOUT, self.client.request(request)).await {
-      Ok(Ok(response)) => {
+      Ok(Ok(mut response)) => {
+        if response.status() == StatusCode::SWITCHING_PROTOCOLS {
+          if !is_websocket
+            || !has_header_token(response.headers(), CONNECTION, "upgrade")
+            || !response
+              .headers()
+              .get(UPGRADE)
+              .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"))
+          {
+            return Ok(text_response(
+              StatusCode::BAD_GATEWAY,
+              "Invalid upstream WebSocket upgrade\n",
+            ));
+          }
+          let upstream_upgrade = hyper::upgrade::on(&mut response);
+          let downstream_upgrade = downstream_upgrade.expect("WebSocket request has an upgrade");
+          let channel_name = channel_name.to_string();
+          tokio::spawn(async move {
+            let result = async {
+              let (downstream, upstream) = tokio::try_join!(downstream_upgrade, upstream_upgrade)?;
+              tokio::io::copy_bidirectional(
+                &mut TokioIo::new(downstream),
+                &mut TokioIo::new(upstream),
+              )
+              .await?;
+              Ok::<_, BoxError>(())
+            }
+            .await;
+            if let Err(error) = result {
+              warn!(channel = %channel_name, error = %error, "WebSocket gateway relay failed");
+            }
+          });
+          let (mut parts, body) = response.into_parts();
+          strip_hop_by_hop_headers(&mut parts.headers);
+          parts
+            .headers
+            .insert(CONNECTION, HeaderValue::from_static("upgrade"));
+          parts
+            .headers
+            .insert(UPGRADE, HeaderValue::from_static("websocket"));
+          return Ok(Response::from_parts(parts, incoming_body(body)));
+        }
         let (mut parts, body) = response.into_parts();
         strip_hop_by_hop_headers(&mut parts.headers);
         Ok(Response::from_parts(parts, incoming_body(body)))
@@ -197,6 +255,15 @@ fn text_response(status: StatusCode, message: &'static str) -> Response<GatewayB
     .status(status)
     .body(body)
     .expect("static HTTP gateway error response is valid")
+}
+
+fn has_header_token(headers: &HeaderMap, name: HeaderName, token: &str) -> bool {
+  headers
+    .get_all(name)
+    .iter()
+    .filter_map(|value| value.to_str().ok())
+    .flat_map(|value| value.split(','))
+    .any(|value| value.trim().eq_ignore_ascii_case(token))
 }
 
 fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
@@ -419,6 +486,74 @@ mod tests {
 
     gateway_task.abort();
     connection_task.abort();
+  }
+
+  #[tokio::test]
+  async fn rejects_connect_and_unsupported_upgrades() {
+    let (mut client, gateway_task, connection_task) = connect_gateway(1).await;
+    for (method, uri, upgrade) in [
+      (Method::CONNECT, "example.com:443", None),
+      (Method::GET, "/", Some("h2c")),
+      (Method::GET, "/", Some("websocket")),
+    ] {
+      let mut request = Request::builder().method(method).uri(uri);
+      if let Some(upgrade) = upgrade {
+        request = request.header(UPGRADE, upgrade);
+      }
+      let response = client
+        .send_request(request.body(Full::new(Bytes::new())).unwrap())
+        .await
+        .unwrap();
+      assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+      response.into_body().collect().await.unwrap();
+    }
+    gateway_task.abort();
+    connection_task.abort();
+  }
+
+  #[tokio::test]
+  async fn websocket_upgrade_relays_frames_and_buffered_bytes() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+      let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+      let port = listener.local_addr().unwrap().port();
+      let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+          request.push(stream.read_u8().await.unwrap());
+        }
+        let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("get /events?token=1 http/1.1"));
+        assert!(request.contains("upgrade: websocket"));
+        assert!(request.contains("sec-websocket-key: test-key"));
+        assert!(!request.contains("x-remove-me:"));
+        // Send a frame with the headers to exercise Hyper's upgrade read buffer.
+        stream.write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: test-accept\r\n\r\n\x81\x02hi").await.unwrap();
+        let mut frame = [0; 8];
+        stream.read_exact(&mut frame).await.unwrap();
+        assert_eq!(&frame, b"\x81\x82\x01\x02\x03\x04ni");
+      });
+      let gateway = HttpGateway::new_http_for_test("127.0.0.1", port);
+      let (mut client, server) = tokio::io::duplex(4096);
+      let gateway_task = tokio::spawn(async move {
+        gateway.serve_connection(server, "websocket-test".into()).await.unwrap();
+      });
+      client.write_all(b"GET /events?token=1 HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive, Upgrade, x-remove-me\r\nUpgrade: websocket\r\nSec-WebSocket-Key: test-key\r\nSec-WebSocket-Version: 13\r\nX-Remove-Me: secret\r\n\r\n").await.unwrap();
+      let mut headers = Vec::new();
+      while !headers.ends_with(b"\r\n\r\n") {
+        headers.push(client.read_u8().await.unwrap());
+      }
+      let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
+      assert!(headers.starts_with("http/1.1 101"));
+      assert!(headers.contains("sec-websocket-accept: test-accept"));
+      let mut frame = [0; 4];
+      client.read_exact(&mut frame).await.unwrap();
+      assert_eq!(&frame, b"\x81\x02hi");
+      client.write_all(b"\x81\x82\x01\x02\x03\x04ni").await.unwrap();
+      upstream_task.await.unwrap();
+      drop(client);
+      gateway_task.await.unwrap();
+    }).await.expect("WebSocket relay must complete");
   }
 
   #[test]

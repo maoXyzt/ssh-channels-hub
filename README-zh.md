@@ -144,7 +144,9 @@ local     = "https://gateway.internal.example"
 mode      = "http-gateway"
 ```
 
-远端客户端直接使用 `http://127.0.0.1:5443/v1`，无需配置 `/etc/hosts` 或 `127.0.0.1` 证书。请求路径、认证 header、body 和流式响应都会保留；不支持 CONNECT 或协议升级。服务器的 `sshd_config` 必须使用 `GatewayPorts no` 或 `clientspecified`：`GatewayPorts yes` 会忽略请求的 loopback 地址，可能把明文监听暴露到所有网卡。
+在 `http-gateway` 模式下，`local = "host:port"` 同样使用 TLS 连接上游。`https://` 写法也同时支持 HTTPS 与 WSS：配置指定上游 TLS，WebSocket 由请求中的 Upgrade 决定。
+
+远端客户端直接使用 `http://127.0.0.1:5443/v1`，无需配置 `/etc/hosts` 或 `127.0.0.1` 证书。请求路径、认证 header、body 和流式响应都会保留；支持 WebSocket 升级（通过 `ws://127.0.0.1:5443/...` 访问 WSS 上游），不支持 CONNECT 或其他协议升级。服务器的 `sshd_config` 必须使用 `GatewayPorts no` 或 `clientspecified`：`GatewayPorts yes` 会忽略请求的 loopback 地址，可能把明文监听暴露到所有网卡。
 
 ### Web 状态页
 

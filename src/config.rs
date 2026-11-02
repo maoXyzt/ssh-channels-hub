@@ -469,9 +469,9 @@ impl ConnectionConfig {
         self.name
       )));
     }
-    if self.local.scheme != Some(EndpointScheme::Https) {
+    if self.local.scheme == Some(EndpointScheme::Http) {
       return Err(AppError::Config(format!(
-        "Channel '{}': mode \"http-gateway\" requires local to be an HTTPS gateway URL",
+        "Channel '{}': mode \"http-gateway\" requires local to be an HTTPS gateway URL or host:port (TLS)",
         self.name
       )));
     }

@@ -146,7 +146,9 @@ local     = "https://gateway.internal.example"
 mode      = "http-gateway"
 ```
 
-The remote client then uses `http://127.0.0.1:5443/v1`, without an `/etc/hosts` entry or a certificate for `127.0.0.1`. Request paths, authorization headers, bodies, and streaming responses are preserved; this mode does not support CONNECT or protocol upgrades. The server's `sshd_config` must use `GatewayPorts no` or `clientspecified`: `GatewayPorts yes` ignores the requested loopback address and can expose the plaintext listener on all interfaces.
+In `http-gateway` mode, `local = "host:port"` also selects a TLS upstream. An `https://` URL supports both HTTPS and WSS; its scheme specifies upstream TLS, while the request selects WebSocket via Upgrade.
+
+The remote client then uses `http://127.0.0.1:5443/v1`, without an `/etc/hosts` entry or a certificate for `127.0.0.1`. Request paths, authorization headers, bodies, and streaming responses are preserved; WebSocket upgrades are supported (use `ws://127.0.0.1:5443/...` to reach the WSS upstream); CONNECT and other protocol upgrades are not supported. The server's `sshd_config` must use `GatewayPorts no` or `clientspecified`: `GatewayPorts yes` ignores the requested loopback address and can expose the plaintext listener on all interfaces.
 
 ### Web status page
 

@@ -121,8 +121,9 @@ or loopback IP certificate is needed. SSH protects the HTTP leg, and the daemon
 validates the upstream HTTPS certificate using native roots. Request paths,
 authorization headers, bodies, and streaming responses are preserved. The URL
 path in `local` is ignored, as in TCP mode. This mode requires `remote->local`,
-an HTTPS `local` URL, and a loopback `remote` listener. CONNECT and protocol
-upgrades are not supported.
+an HTTPS `local` URL or `host:port` (TLS), and a loopback `remote` listener.
+WebSocket upgrades are supported; use `ws://127.0.0.1:5443/...` for WSS upstreams.
+CONNECT and other protocol upgrades are not supported.
 
 The loopback check applies only to the requested bind address. If `sshd_config`
 sets `GatewayPorts yes`, the server ignores that address and binds all
@@ -626,8 +627,9 @@ mode      = "http-gateway"
 远端客户端使用 `http://127.0.0.1:5443/v1`，无需配置远端 `/etc/hosts` 或 loopback
 IP 证书。HTTP 段由 SSH 保护，daemon 使用系统根证书验证上游 HTTPS。请求路径、认证
 header、body 和流式响应都会保留；`local` 中的 URL path 与 TCP 模式一样会被忽略。
-此模式要求 `remote->local`、HTTPS `local` URL 和 loopback `remote` 监听，不支持
-CONNECT 或协议升级。
+此模式要求 `remote->local`、HTTPS `local` URL 或 `host:port`（TLS），以及 loopback
+`remote` 监听。支持 WebSocket 升级，通过 `ws://127.0.0.1:5443/...` 访问 WSS 上游；
+不支持 CONNECT 或其他协议升级。
 
 loopback 校验只针对请求的绑定地址。如果 `sshd_config` 设置了 `GatewayPorts yes`，
 服务器会忽略该地址并监听所有网卡，从而暴露明文 HTTP 端口。gateway channel 应使用
